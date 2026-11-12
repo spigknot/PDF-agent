@@ -19,7 +19,7 @@ NIVEIS = [
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("CompressPDF")
+        self.title("PDFagent")
         self.geometry("640x520")
         self.arquivos = []
         self.fila = queue.Queue()
@@ -88,7 +88,7 @@ class App(tk.Tk):
 
     def _go(self):
         if not self.arquivos:
-            messagebox.showinfo("CompressPDF", "Adicione pelo menos um PDF.")
+            messagebox.showinfo("PDFagent", "Adicione pelo menos um PDF.")
             return
         # captura TUDO da UI aqui (thread da UI); a worker só recebe valores
         nivel = self.nivel.get()
