@@ -52,6 +52,29 @@ dist\PDFagent.exe --version
 O `CompressPDF.bat` usa o `dist\PDFagent.exe` quando ele existe e cai para
 `python app.py` quando não existe (modo desenvolvimento).
 
+## Instalador (Windows)
+
+```bash
+"C:\Users\<voce>\AppData\Local\Programs\Inno Setup 6\ISCC.exe" instalador\PDFagent.iss
+```
+
+Gera `dist\PDFagent-Setup-1.0.0.exe` (per-usuário, **não pede admin**). Duas
+opções vêm marcadas:
+
+- **Adicionar ao PATH do usuário** → `PDFagent` fica chamável no terminal;
+- **Adicionar "PDFagent > Comprimir" ao menu de contexto de PDFs**.
+
+A ação do menu executa `PDFagent.exe --in-place --avisar "%1"`:
+
+1. comprime com o perfil **recommended**;
+2. renomeia o original para `<nome>_old.pdf` (usa `_old_2`, `_old_3`… se já existir);
+3. deixa a saída com o **nome original**;
+4. mostra o resultado numa caixa de diálogo.
+
+Se o arquivo não puder ficar menor, nada é alterado (o original permanece).
+Desinstalar: Configurações → Apps → PDFagent — remove arquivos, a entrada do
+PATH e as chaves do menu de contexto.
+
 ## Interface gráfica
 
 **Duplo clique em `CompressPDF.bat`** (instala as dependências sozinho na

@@ -2761,6 +2761,70 @@ def _nome_saida(entrada, saida, nivel):
     return cand
 
 
+def _nome_livre(caminho):
+    """Devolve <nome>_old.pdf, ou _old_2, _old_3... se ja existir."""
+    raiz, ext = os.path.splitext(caminho)
+    if not os.path.exists(caminho):
+        return caminho
+    n = 2
+    while os.path.exists("%s_%d%s" % (raiz, n, ext)):
+        n += 1
+    return "%s_%d%s" % (raiz, n, ext)
+
+
+def _aviso(titulo, msg, erro=False):
+    """Caixa de dialogo — o .exe e --windowed, entao print nao aparece."""
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+        raiz = tk.Tk()
+        raiz.withdraw()
+        (messagebox.showerror if erro else messagebox.showinfo)(titulo, msg)
+        raiz.destroy()
+    except Exception:
+        try:
+            print(msg)
+        except Exception:
+            pass
+
+
+def _in_place(entradas, args):
+    """Comprime no lugar: original vira <nome>_old.pdf, saida assume o nome."""
+    linhas = []
+    falhas = 0
+    for entrada in entradas:
+        pasta, arquivo = os.path.split(entrada)
+        base = os.path.splitext(arquivo)[0]
+        tmp = os.path.join(pasta, ".pdfagent_%s.tmp.pdf" % base)
+        try:
+            r = comprimir(entrada, tmp, args.nivel)
+            if r["depois"] >= r["antes"]:
+                raise RuntimeError("nao ficou menor (%d -> %d bytes)"
+                                   % (r["antes"], r["depois"]))
+            antigo = _nome_livre(os.path.join(pasta, base + "_old.pdf"))
+            os.replace(entrada, antigo)
+            os.replace(tmp, entrada)
+            linhas.append("%s: %d -> %d bytes (-%.1f%%) | original: %s"
+                          % (arquivo, r["antes"], r["depois"], r["razao"],
+                             os.path.basename(antigo)))
+        except Exception as ex:
+            falhas += 1
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except Exception:
+                pass
+            linhas.append("%s: FALHOU (%s)" % (arquivo, ex))
+    msg = "\n".join(linhas)
+    if args.avisar:
+        _aviso("PDFagent", msg, erro=bool(falhas))
+    else:
+        for linha in linhas:
+            print(linha)
+    if falhas:
+        sys.exit(1)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(
         prog="PDFagent",
@@ -2776,6 +2840,11 @@ def main(argv=None):
                     help="arquivo de saida (padrao: <nome>-compressed.pdf)")
     ap.add_argument("--saida-dir", default=None,
                     help="pasta de saida (modo lote)")
+    ap.add_argument("--in-place", action="store_true",
+                    help="comprime no lugar: original vira <nome>_old.pdf e a "
+                         "saida assume o nome original (usado no menu de contexto)")
+    ap.add_argument("--avisar", action="store_true",
+                    help="mostra uma caixa de dialogo com o resultado (menu de contexto)")
     args = ap.parse_args(argv)
 
     entradas = []
@@ -2786,6 +2855,8 @@ def main(argv=None):
         entradas = [args.entrada]
     if not entradas:
         sys.exit("nenhum PDF encontrado")
+    if args.in_place:
+        return _in_place(entradas, args)
     falhas = 0
     for entrada in entradas:
         if args.saida and len(entradas) == 1:
