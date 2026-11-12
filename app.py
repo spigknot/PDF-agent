@@ -133,5 +133,27 @@ class App(tk.Tk):
         self.after(100, self._drena)
 
 
+def _anexa_console():
+    """No .exe --windowed o stdout/stderr vem nulos: sem isso o modo linha de
+    comando (PDFagent.exe entrada.pdf -n low) nao imprime nada. Anexa ao
+    console do processo pai e reabre os fluxos."""
+    if os.name != "nt" or sys.stdout is not None:
+        return
+    try:
+        import ctypes
+        if ctypes.windll.kernel32.AttachConsole(-1):
+            sys.stdout = open("CONOUT$", "w", buffering=1,
+                              encoding="utf-8", errors="replace")
+            sys.stderr = open("CONOUT$", "w", buffering=1,
+                              encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+
 if __name__ == "__main__":
-    App().mainloop()
+    argv = sys.argv[1:]
+    if argv:
+        _anexa_console()
+        compress.main(argv)      # argparse cuida de -V/--version e erros
+    else:
+        App().mainloop()

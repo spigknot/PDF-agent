@@ -33,6 +33,25 @@ Transparência (`/SMask`) preservada e reamostrada como no original.
 pip install -r requirements.txt
 ```
 
+## Executável (Windows)
+
+```bash
+python scripts/build_exe.py          # gera dist/PDFagent.exe (onefile)
+```
+
+`PDFagent.exe` sem argumentos abre a interface gráfica; com argumentos funciona
+como linha de comando (o próprio .exe anexa o console do pai):
+
+```bash
+dist\PDFagent.exe                                  # GUI
+dist\PDFagent.exe entrada.pdf -n low               # CLI
+dist\PDFagent.exe pasta\ -n recommended --saida-dir out\
+dist\PDFagent.exe --version
+```
+
+O `CompressPDF.bat` usa o `dist\PDFagent.exe` quando ele existe e cai para
+`python app.py` quando não existe (modo desenvolvimento).
+
 ## Interface gráfica
 
 **Duplo clique em `CompressPDF.bat`** (instala as dependências sozinho na

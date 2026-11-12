@@ -3,6 +3,12 @@ rem CompressPDF - duplo clique aqui para abrir a interface grafica.
 rem (este .bat fica na raiz do projeto e funciona em qualquer pasta)
 cd /d "%~dp0"
 
+rem Se o executavel empacotado existir, ele manda (traz as dependencias embutidas)
+if exist "%~dp0dist\PDFagent.exe" (
+  start "" "%~dp0dist\PDFagent.exe"
+  exit /b 0
+)
+
 set "PY=C:\Users\Gustavo\AppData\Local\Programs\Python\Python311\python.exe"
 set "PYW=C:\Users\Gustavo\AppData\Local\Programs\Python\Python311\pythonw.exe"
 

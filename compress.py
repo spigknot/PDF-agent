@@ -47,6 +47,9 @@ _sem_risco_kernel = False
 # objgens recortados pelo ClipImages nesta execucao (ver _alvo)
 _CLIPADOS = set()
 
+# Versao do aplicativo (mostrada por --version e usada no build do .exe)
+VERSAO = "1.0.0"
+
 LEVELS = {
     # Low (0): base = perfil Default (tudo desligado) + overrides abaixo.
     "low": {
@@ -2760,8 +2763,11 @@ def _nome_saida(entrada, saida, nivel):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(
+        prog="PDFagent",
         description="Comprime PDFs nos 3 niveis do iLovePDF "
                     "(Extreme/Recommended/Low) — replica open-source.")
+    ap.add_argument("-V", "--version", action="version",
+                    version="PDFagent %s" % VERSAO)
     ap.add_argument("entrada", help="PDF de entrada ou pasta com PDFs")
     ap.add_argument("-n", "--nivel", default="recommended",
                     choices=["extreme", "recommended", "low"],

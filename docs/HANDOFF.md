@@ -200,6 +200,9 @@ python app.py                            # GUI (ou duplo clique em CompressPDF.b
 python compress.py entrada.pdf -n recommended
 python tests/test_levels.py              # deve imprimir TUDO OK
 
+python scripts/build_exe.py              # gera dist/PDFagent.exe (GUI + CLI)
+                                         # sem args: GUI | com args: CLI | --version
+
 python scripts/verificar.py              # GATE UNICO: niveis + paridade vs
                                          # iLovePDF + launcher .bat + exit code
 ```
