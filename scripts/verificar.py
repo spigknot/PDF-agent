@@ -64,13 +64,18 @@ def teste_launcher():
         conteudo = f.read()
     if "cd /d \"%~dp0\"" not in conteudo:
         return item("launcher .bat", False, "sem cd /d \"%~dp0\"")
-    # roda uma copia que nao abre a GUI: troca o start por echo
+    # roda uma copia que nao abre a GUI: neutraliza os DOIS launches (o do
+    # dist\PDFagent.exe e o do pythonw). Lancar a GUI aqui trava o subprocess:
+    # o processo grafico herda os pipes e o communicate() espera o EOF.
+    neutro = "echo LAUNCH_OK cd=%~dp0"
+    testavel = (conteudo
+                .replace('start "" "%~dp0dist\\PDFagent.exe"', neutro)
+                .replace('start "" "%PYW%" app.py', neutro))
     tmp = os.path.join(RAIZ, "_verifica_launcher.bat")
     try:
         with open(tmp, "w", encoding="ascii", errors="replace", newline="\r\n") as f:
-            f.write(conteudo.replace('start "" "%PYW%" app.py',
-                                     "echo LAUNCH_OK cd=%~dp0"))
-        rc, saida = roda(["cmd", "/c", "_verifica_launcher.bat"], timeout=120)
+            f.write(testavel)
+        rc, saida = roda(["cmd", "/c", "_verifica_launcher.bat"], timeout=60)
     finally:
         try:
             os.remove(tmp)
