@@ -1,0 +1,4 @@
+pikepdf
+Pillow
+fonttools
+pymupdf
