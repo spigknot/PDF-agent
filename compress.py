@@ -540,7 +540,11 @@ def _subset_fontes_cid(pdf, log):
             ff[Name("/Filter")] = Name("/FlateDecode")
             ff[Name("/Length1")] = len(novo)
             dados_mapa = zlib.compress(bytes(novo_mapa), 9)
-            if identidade:
+            if identidade and getattr(opts, "retain_gids", False):
+                # GIDs preservados: /Identity continua valido e nao precisa
+                # de stream (o motor tambem mantem Identity). Economiza objeto.
+                pass
+            elif identidade:
                 # nao existia stream de mapa: cria um indireto com o novo
                 novo_c2g = pdf.make_stream(dados_mapa)
                 novo_c2g[Name("/Filter")] = Name("/FlateDecode")
@@ -548,6 +552,18 @@ def _subset_fontes_cid(pdf, log):
             else:
                 c2g.write(dados_mapa)
                 c2g[Name("/Filter")] = Name("/FlateDecode")
+            # tag de subset de 6 letras, como o motor faz (ASJHEV+ArialMT)
+            try:
+                import random
+                import string
+                tag = "".join(random.choices(string.ascii_uppercase, k=6))
+                nome = str(fo.get("/BaseFont", "")).lstrip("/")
+                if "+" in nome:
+                    nome = nome.split("+", 1)[1]
+                fo[Name("/BaseFont")] = Name("/%s+%s" % (tag, nome))
+                d0[Name("/BaseFont")] = Name("/%s+%s" % (tag, nome))
+            except Exception:
+                pass
             n += 1
         except Exception as ex:
             log(f"    subset CID: {ex}")
@@ -1041,6 +1057,26 @@ def _recomprime_imagem(pdf, obj, spec, usos, log):
         if dpi is not None:
             dpi_final = dpi
             drawn_w, drawn_h = tam if tam else (0.0, 0.0)
+            # Imagem degenerada (lado desenhado < 1 pt): nos perfis de limiar
+            # baixo (recommended/extreme) o motor grava 1x1 cru; no low (400)
+            # ele mantem o original. Caso real: x.pdf /Image6 1x656 desenhada
+            # em 0,12x276,6 pt.
+            if (min(drawn_w, drawn_h) < 1.0 and spec["limiar"] <= 150.0
+                    and (w, h) != (1, 1)):
+                try:
+                    obj.write(b"\x00")
+                    for k in ("/Filter", "/DecodeParms", "/SMask", "/Mask"):
+                        try:
+                            del obj[k]
+                        except Exception:
+                            pass
+                    obj[Name("/Width")] = 1
+                    obj[Name("/Height")] = 1
+                    obj[Name("/ColorSpace")] = Name("/DeviceGray")
+                    obj[Name("/BitsPerComponent")] = 8
+                    return True, "1x1", dpi
+                except Exception as ex:
+                    log(f"    1x1 falhou: {ex}")
             # Corte empirico ajustado nas amostras reais: o motor nao
             # reamostra imagem desenhada com menos de 60 pt no lado menor
             # QUANDO o dpi efetivo e' moderado (<150). NS8002 pg6: 150x55

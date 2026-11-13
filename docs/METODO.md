@@ -326,6 +326,15 @@ Texto extraído e hyperlinks: **idênticos ao original em todos os 21 casos**.
   não é reamostrado quando o dpi efetivo é < 150 (NS8002: 150x55 a 116 dpi e
   152x21 a 123 dpi ficaram intactas); acima disso o motor reduz mesmo pequeno
   (x.pdf: 48x45 pt a 199 dpi → 48x45, igual ao deles).
+- **Imagem degenerada (< 1 pt desenhado)**: nos perfis de limiar ≤ 150 o motor
+  grava `1x1` sem filtro (x.pdf: `1x656` desenhada em 0,12×276,6 pt); no low
+  (limiar 400) mantém o original. Replicado — nosso `1x1` ainda sai com
+  `FlateDecode` (9 B) por causa do `compress_streams` do pikepdf, contra 1 B
+  cru do motor.
+- **Tag de subset nas Type0**: `_subset_fontes_cid` agora renomeia para
+  `ABCDEF+Nome` (antes ficava sem tag) e, com `retain_gids`, mantém
+  `/CIDToGIDMap /Identity` em vez de criar um stream — 1 objeto a menos por
+  fonte, como o motor faz.
 - **Limitações que restam** (medidas): **21/21 combinações estruturalmente
   idênticas** às do iLovePDF e **nenhum arquivo maior** (total −3,9%).
 - Sem `MergeEmbeddedFonts`/`ConvertToCFF`, sem MRC, sem `ClipImages` de paths
