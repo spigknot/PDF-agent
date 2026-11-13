@@ -318,6 +318,12 @@ Texto extraído e hyperlinks: **idênticos ao original em todos os 21 casos**.
   diferença de render em 72/150/300 dpi** e texto idêntico; no corpus, PSNR
   (33,22 vs 30,79 dB), render (0,058% vs 0,135%) e SSIM (0,9990 vs 0,9984)
   seguem melhores que o iLovePDF. `COMPRESSPDF_HINT=1` restaura o hinting.
+- **A política do motor não é reproduzível por flag**: `COMPRESSPDF_SUBSET=ilovepdf`
+  (retain-gids + hinting) gera 137.164 B no `x.pdf` — **35% MAIOR** que os
+  101.754 B dele — porque o subsetter do 3-Heights mantém ~850 glifos por fonte
+  e ainda comprime melhor. Com hinting ligado ficamos 132.590 B > 101.754 B,
+  ou seja, a política "compacta" é a única que cumpre "nunca maior" neste
+  arquivo. O default fica compacta; a env existe para experimentos.
 - **Limitações que restam** (medidas): **21/21 combinações estruturalmente
   idênticas** às do iLovePDF e **nenhum arquivo maior** (total −5,4%).
 - Sem `MergeEmbeddedFonts`/`ConvertToCFF`, sem MRC, sem `ClipImages` de paths

@@ -321,6 +321,24 @@ def _usos_por_fonte(pdf):
     return saida
 
 
+def _politica_subset(opts):
+    """Politica do subset de fontes.
+
+    COMPRESSPDF_SUBSET=compacto (padrao): renumerа glifos e descarta hinting —
+        menor arquivo, mesma renderizacao medida (MuPDF), mas texto
+        potencialmente menos "grid-fitado" em viewers que honram hinting.
+    COMPRESSPDF_SUBSET=ilovepdf: mantem os GIDs originais (retain_gids) e o
+        hinting, que e' o que o motor 3-Heights faz (evidencia: os glifos do
+        subset dele sao glyph00001... na ordem original, com fpgm/prep/cvt).
+    """
+    modo = os.environ.get("COMPRESSPDF_SUBSET", "compacto").lower()
+    if modo.startswith("ilove"):
+        opts.retain_gids = True
+        opts.hinting = True
+    else:
+        opts.hinting = os.environ.get("COMPRESSPDF_HINT", "0") == "1"
+
+
 def _subset_fontes_cff(pdf, log):
     """Encolhe fontes CFF/CIDFontType0C esvaziando os charstrings NAO usados.
 
@@ -487,11 +505,7 @@ def _subset_fontes_cid(pdf, log):
             nomes = [ordem[g] for g in sorted(gids)]
             opts = subset.Options()
             opts.layout_features = ["*"]
-            # Hinting fora por padrao: corta ~40% do programa sem diferenca de
-            # render mensuravel (x.pdf: 132 -> 83 KB, 0,000% em 72/150/300 dpi).
-            # COMPRESSPDF_HINT=1 restaura o comportamento antigo.
-            if os.environ.get("COMPRESSPDF_HINT", "0") != "1":
-                opts.hinting = False
+            _politica_subset(opts)
             ss = subset.Subsetter(opts)
             ss.populate(glyphs=nomes)
             ss.subset(tt)
@@ -1975,9 +1989,7 @@ def _subset_fontes(pdf, log):
                     continue  # nao sabemos mapear todos: nao arriscar
                 opts = subset.Options()
                 opts.layout_features = ["*"]
-                # ver _subset_fontes_cid: hinting fora por padrao
-                if os.environ.get("COMPRESSPDF_HINT", "0") != "1":
-                    opts.hinting = False
+                _politica_subset(opts)
                 ss = subset.Subsetter(opts)
                 ss.populate(glyphs=sorted(nomes))
                 ss.subset(tt)
