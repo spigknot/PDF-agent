@@ -201,6 +201,7 @@ rodada.
 | sintoma | causa | resolução |
 |---|---|---|
 | exe com vários GB / build eterno | `--collect-all pymupdf` arrasta `pymupdf.features/layout` → **torch + onnxruntime** | o `scripts/build_exe.py` já exclui `torch`, `onnxruntime`, `pymupdf.features`, `pymupdf.layout`; não remova essas linhas |
+| exe com ~120 MB | `--collect-all pymupdf` copia `pymupdf/layout/resources/onnx` (**41 MB de modelos**) e `mupdf-devel`; `sympy`/`pygments`/`_pytest`/`PIL._avif` vinham no grafo | `build_exe.py` usa `--collect-binaries pymupdf` + `--collect-submodules pymupdf` e exclui `sympy`, `mpmath`, `pygments`, `_pytest`, `pytest`, `IPython`, `PIL._avif` → **58,6 MB** (medido: mesma saída byte a byte)|
 | instalador silencioso não cria PATH nem menu | MSYS converteu `/VERYSILENT`/`/TASKS` em caminho | rodar com `MSYS2_ARG_CONV_EXCL='*'` |
 | `[FALHA] launcher .bat` no gate | o `.bat` passou a lançar `dist\PDFagent.exe`; a GUI herda os pipes e o subprocess espera EOF | o teste já neutraliza os **dois** launches; se voltar, ver `teste_launcher()` |
 | `gh release create` com tag no commit errado | release criada antes do push | sempre seção 6 antes da 7; se preciso: `git push origin +<SHA>:refs/tags/v<versao>` |

@@ -24,14 +24,25 @@ def main(argv):
         "--workpath", os.path.join(RAIZ, "build"),
         "--specpath", os.path.join(RAIZ, "build"),
         # binarios/dados das libs: pikepdf traz libqpdf; pymupdf traz o MuPDF.
-        # O collect-all do pymupdf puxa os modulos de ML dele (features/layout),
-        # que arrastam torch+onnxruntime — excluidos explicitamente.
+        # NAO usar --collect-all pymupdf: ele puxa pymupdf/layout/resources/onnx
+        # (~41 MB de modelos que o app nunca usa) + mupdf-devel (.lib/.h).
+        # --collect-binaries leva so as DLLs (_mupdf, mupdfcpp64, _tgif...).
         "--collect-all", "pikepdf",
-        "--collect-all", "pymupdf",
+        "--collect-binaries", "pymupdf",
+        "--collect-submodules", "pymupdf",
         "--exclude-module", "torch",
         "--exclude-module", "onnxruntime",
         "--exclude-module", "pymupdf.features",
         "--exclude-module", "pymupdf.layout",
+        # nao usados pelo app; vinham arrastados pelo grafo de importacao
+        "--exclude-module", "sympy",
+        "--exclude-module", "mpmath",
+        "--exclude-module", "pygments",
+        "--exclude-module", "_pytest",
+        "--exclude-module", "pytest",
+        "--exclude-module", "IPython",
+        # Pillow: nao decodificamos AVIF (4,2 MB de plugin)
+        "--exclude-module", "PIL._avif",
         "--hidden-import", "fitz",
         "--collect-submodules", "fontTools",
         APP,
