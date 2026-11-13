@@ -313,19 +313,21 @@ Texto extraído e hyperlinks: **idênticos ao original em todos os 21 casos**.
   (`REA-lab\x\x.pdf`): ArialMT 101.823 → 7.126 B e Wingdings 15.192 → 4.954 B;
   o arquivo caiu de 238.175 → 132.590 B no recommended (iLovePDF: 101.754).
   O mapa é reconstruído como stream depois do subset.
-- **Hinting fora do subset (novo padrão)**: `opts.hinting = False` corta ~40%
-  do programa. No `x.pdf`: 132.590 → 82.718 B (recommended) com **0,000% de
-  diferença de render em 72/150/300 dpi** e texto idêntico; no corpus, PSNR
-  (33,22 vs 30,79 dB), render (0,058% vs 0,135%) e SSIM (0,9990 vs 0,9984)
-  seguem melhores que o iLovePDF. `COMPRESSPDF_HINT=1` restaura o hinting.
-- **A política do motor não é reproduzível por flag**: `COMPRESSPDF_SUBSET=ilovepdf`
-  (retain-gids + hinting) gera 137.164 B no `x.pdf` — **35% MAIOR** que os
-  101.754 B dele — porque o subsetter do 3-Heights mantém ~850 glifos por fonte
-  e ainda comprime melhor. Com hinting ligado ficamos 132.590 B > 101.754 B,
-  ou seja, a política "compacta" é a única que cumpre "nunca maior" neste
-  arquivo. O default fica compacta; a env existe para experimentos.
+- **Política de subset = a do motor (novo padrão)**: `retain_gids=True`
+  (GIDs originais), `hinting=True` (fpgm/prep/cvt) e `drop_tables=[GPOS,GSUB,
+  GDEF]` com `layout_features=[]`. Evidência no `x.pdf`: os subsets do iLovePDF
+  têm exatamente as contagens por GID 218/178/857/896/856/30 e só as tabelas
+  `glyf/fpgm/prep/cvt/hmtx/loca/name`. Resultado: 95.472 B (recommended),
+  97.941 (low) e 75.854 (extreme) contra 101.754/101.760/78.689 deles —
+  −6,2%, −3,8% e −3,6%. `COMPRESSPDF_SUBSET=compacto` volta à política
+  agressiva (sem hinting, mantém GPOS/GSUB): menor arquivo, mesma renderização
+  medida, mas sem o hinting do motor.
+- **Corte de imagem só vale para dpi moderado**: desenho com lado menor < 60 pt
+  não é reamostrado quando o dpi efetivo é < 150 (NS8002: 150x55 a 116 dpi e
+  152x21 a 123 dpi ficaram intactas); acima disso o motor reduz mesmo pequeno
+  (x.pdf: 48x45 pt a 199 dpi → 48x45, igual ao deles).
 - **Limitações que restam** (medidas): **21/21 combinações estruturalmente
-  idênticas** às do iLovePDF e **nenhum arquivo maior** (total −5,4%).
+  idênticas** às do iLovePDF e **nenhum arquivo maior** (total −3,9%).
 - Sem `MergeEmbeddedFonts`/`ConvertToCFF`, sem MRC, sem `ClipImages` de paths
   curvos (só retangulares — os demais são ignorados por segurança).
 - Rede de segurança: após comprimir, o render é comparado com o original; se

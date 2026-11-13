@@ -123,7 +123,7 @@ Scripts de avaliação (em `C:\Users\Gustavo\AppData\Local\Temp\rea_lab2\`):
 
 | eixo | nosso | iLovePDF |
 |---|---|---|
-| tamanho total | **3.977.419 B** | 4.203.565 B (**−5,4%**) |
+| tamanho total | **4.040.405 B** | 4.203.565 B (**−3,9%**) |
 | menor em | **21 / 21** | 0 |
 | algum arquivo maior | **nenhum** | — |
 | PSNR por imagem (158) | **33,22 dB** | 30,79 dB |
@@ -289,9 +289,9 @@ Wingdings 15 KB); as imagens somam só 5,7 KB. O gargalo era fonte, não imagem.
 
 | nível | nós (antes) | nós (agora) | iLovePDF |
 |---|---|---|---|
-| recommended | 238.175 | **82.718** | 101.754 |
-| low | 238.507 | **83.026** | 101.760 |
-| extreme | 220.237 | **64.727** | 78.689 |
+| recommended | 238.175 | **95.472** (−6,2%) | 101.754 |
+| low | 238.507 | **97.941** (−3,8%) | 101.760 |
+| extreme | 220.237 | **75.854** (−3,6%) | 78.689 |
 
 Duas causas, ambas corrigidas:
 
@@ -299,13 +299,18 @@ Duas causas, ambas corrigidas:
    (`if c2g is None or isinstance(c2g, Name): continue`): ArialMT e Wingdings
    (Type0/CIDFontType2) ficavam com o programa inteiro. Agora o mapa é
    reconstruído como stream (CID → novo GID); texto continua idêntico.
-2. **Hinting fora do subset** (novo padrão): corta ~40% do programa, medido
-   0,000% de diferença de render em 72/150/300 dpi neste arquivo.
+2. **Política de subset agora é a do motor** (`COMPRESSPDF_SUBSET=motor`, o
+   padrão): `retain_gids` + hinting + sem GPOS/GSUB/GDEF. Os subsets deles têm
+   exatamente as contagens por GID 218/178/857/896/856/30 e só as tabelas
+   `glyf/fpgm/prep/cvt/hmtx/loca/name` — com essa política batemos glifo por
+   glifo e o tamanho encosta no deles.
 
-Corpus: total −3,9% → **−5,4%** (3.977.419 B), nenhum arquivo maior, paridade
-estrutural 0/21.
+Também refinei o corte de imagem: desenho com lado menor < 60 pt só é
+preservado quando o dpi é < 150 (o x.pdf tem 48x45 pt a 199 dpi e é reduzido,
+como eles fazem).
 
-Diferença que permanece — e é a nosso favor: no extreme o iLovePDF reduz a
-imagem 134x125 para 48x45 (dpi 199, desenhada em 48x45 pt); nosso corte de
-60 pt no lado menor desenhado (fitado para casar o NS8002) mantém 134x125.
-Neste arquivo entregamos mais detalhe e ainda assim ~18% menor.
+Corpus: total **−3,9%** (4.040.405 B), nenhum arquivo maior, paridade
+estrutural 0/21, PSNR 33,22 vs 30,79 dB, render 0,058% vs 0,135%.
+
+Neste arquivo as decisões de imagem agora também batem: a imagem 134x125 é
+reduzida para 48x45 no extreme e para 101x94 no recommended, como eles fazem.

@@ -325,14 +325,21 @@ def _politica_subset(opts):
     """Politica do subset de fontes.
 
     COMPRESSPDF_SUBSET=compacto (padrao): renumerа glifos e descarta hinting —
-        menor arquivo, mesma renderizacao medida (MuPDF), mas texto
-        potencialmente menos "grid-fitado" em viewers que honram hinting.
-    COMPRESSPDF_SUBSET=ilovepdf: mantem os GIDs originais (retain_gids) e o
-        hinting, que e' o que o motor 3-Heights faz (evidencia: os glifos do
-        subset dele sao glyph00001... na ordem original, com fpgm/prep/cvt).
+        menor arquivo, mesma renderizacao medida (MuPDF).
+    COMPRESSPDF_SUBSET=motor: replica o conjunto de tabelas do 3-Heights
+        (evidencia no x.pdf): mantem hinting (fpgm/prep/cvt), mantem os GIDs
+        originais e NAO carrega GPOS/GSUB. COMPRESSPDF_SUBSET=compacto|motor.
     """
-    modo = os.environ.get("COMPRESSPDF_SUBSET", "compacto").lower()
-    if modo.startswith("ilove"):
+    modo = os.environ.get("COMPRESSPDF_SUBSET", "motor").lower()
+    if modo.startswith("mot"):
+        opts.retain_gids = True
+        opts.hinting = True
+        opts.layout_features = []
+        # o motor nao emite GPOS/GSUB/GDEF no subset (evidencia: as 6 fontes
+        # do x_ilovepdf_* so tem glyf/fpgm/prep/cvt/hmtx/loca/name)
+        opts.drop_tables = list(getattr(opts, "drop_tables", [])) + [
+            "GPOS", "GSUB", "GDEF"]
+    elif modo.startswith("ilove"):
         opts.retain_gids = True
         opts.hinting = True
     else:
@@ -1034,11 +1041,13 @@ def _recomprime_imagem(pdf, obj, spec, usos, log):
         if dpi is not None:
             dpi_final = dpi
             drawn_w, drawn_h = tam if tam else (0.0, 0.0)
-            # Corte empirico ajustado nas 21 saidas reais: o motor nao
-            # reamostra imagem desenhada com menos de 60 pt no lado menor.
-            # (NS8002 pg6: 150x55 e 152x21 ficaram intactas; a menor
-            #  reduzida no corpus tem 61 pt — AP5439 pg0.)
-            if dpi > spec["limiar"] and min(drawn_w, drawn_h) >= 60.0:
+            # Corte empirico ajustado nas amostras reais: o motor nao
+            # reamostra imagem desenhada com menos de 60 pt no lado menor
+            # QUANDO o dpi efetivo e' moderado (<150). NS8002 pg6: 150x55
+            # (116 dpi) e 152x21 (123 dpi) ficaram intactas; o x.pdf tem
+            # 48x45 pt mas a 199 dpi e E' reduzido para 48x45.
+            pequena = min(drawn_w, drawn_h) < 60.0 and dpi < 150.0
+            if dpi > spec["limiar"] and not pequena:
                 # O motor guarda o dpi efetivo em float32 e calcula o alvo
                 # como px*res/dpi (fórmula de FUN_1800a6720). Reproduzir o
                 # float32 acerta os ±1 px que sobravam (GM9477 pg1: 241x160).

@@ -15,7 +15,7 @@ evidências.
 
 | métrica | CompressPDF | iLovePDF |
 |---|---|---|
-| tamanho total | **3.977.419 B** | 4.203.565 B (**−5,4%**) |
+| tamanho total | **4.040.405 B** | 4.203.565 B (**−3,9%**) |
 | menor em | **21 / 21** arquivos | 0 |
 | diferença média de render | **0,058%** | 0,135% |
 | **PSNR por imagem** (158 imgs) | **33,22 dB** | 30,79 dB |
