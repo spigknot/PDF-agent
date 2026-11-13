@@ -456,8 +456,10 @@ def _subset_fontes_cid(pdf, log):
             if str(d0.get("/Subtype")) != "/CIDFontType2":
                 continue
             c2g = d0.get("/CIDToGIDMap")
-            if c2g is None or isinstance(c2g, Name):
-                continue  # Identity: exigiria renumerar CIDs
+            # /Identity (ou ausente) era pulado: CID == GID, entao da para
+            # subsetar e reconstruir o mapa como stream depois. Era o caso das
+            # fontes grandes do x.pdf (ArialMT 102 KB, Wingdings 15 KB).
+            identidade = c2g is None or isinstance(c2g, Name)
             fd = d0.get("/FontDescriptor")
             if fd is None:
                 continue
@@ -466,21 +468,30 @@ def _subset_fontes_cid(pdf, log):
                 continue
             _garante_stream_exclusivo(pdf, fd, "/FontFile2", contagem, log)
             ff = fd.get("/FontFile2")
-            mapa = c2g.read_bytes()
+            mapa = None if identidade else c2g.read_bytes()
             raw = ff.read_bytes()
             tt = TTFont(io.BytesIO(raw))
             ordem = tt.getGlyphOrder()
             gids = set()
             for cid in codigos:
-                if 2 * cid + 1 < len(mapa):
+                if identidade:
+                    g = cid
+                elif 2 * cid + 1 < len(mapa):
                     g = (mapa[2 * cid] << 8) | mapa[2 * cid + 1]
-                    if 0 < g < len(ordem):
-                        gids.add(g)
+                else:
+                    continue
+                if 0 < g < len(ordem):
+                    gids.add(g)
             if not gids:
                 continue
             nomes = [ordem[g] for g in sorted(gids)]
             opts = subset.Options()
             opts.layout_features = ["*"]
+            # Hinting fora por padrao: corta ~40% do programa sem diferenca de
+            # render mensuravel (x.pdf: 132 -> 83 KB, 0,000% em 72/150/300 dpi).
+            # COMPRESSPDF_HINT=1 restaura o comportamento antigo.
+            if os.environ.get("COMPRESSPDF_HINT", "0") != "1":
+                opts.hinting = False
             ss = subset.Subsetter(opts)
             ss.populate(glyphs=nomes)
             ss.subset(tt)
@@ -494,18 +505,28 @@ def _subset_fontes_cid(pdf, log):
             maxcid = max(codigos)
             novo_mapa = bytearray(2 * (maxcid + 1))
             for cid in range(maxcid + 1):
-                if 2 * cid + 1 < len(mapa):
+                if identidade:
+                    g = cid
+                elif mapa is not None and 2 * cid + 1 < len(mapa):
                     g = (mapa[2 * cid] << 8) | mapa[2 * cid + 1]
-                    if g < len(ordem):
-                        ng = nome2gid.get(ordem[g], 0)
-                        novo_mapa[2 * cid] = (ng >> 8) & 0xFF
-                        novo_mapa[2 * cid + 1] = ng & 0xFF
-            filt = str(ff.get("/Filter"))
+                else:
+                    continue
+                if g < len(ordem):
+                    ng = nome2gid.get(ordem[g], 0)
+                    novo_mapa[2 * cid] = (ng >> 8) & 0xFF
+                    novo_mapa[2 * cid + 1] = ng & 0xFF
             ff.write(zlib.compress(novo, 9))
             ff[Name("/Filter")] = Name("/FlateDecode")
             ff[Name("/Length1")] = len(novo)
-            c2g.write(zlib.compress(bytes(novo_mapa), 9))
-            c2g[Name("/Filter")] = Name("/FlateDecode")
+            dados_mapa = zlib.compress(bytes(novo_mapa), 9)
+            if identidade:
+                # nao existia stream de mapa: cria um indireto com o novo
+                novo_c2g = pdf.make_stream(dados_mapa)
+                novo_c2g[Name("/Filter")] = Name("/FlateDecode")
+                d0[Name("/CIDToGIDMap")] = novo_c2g
+            else:
+                c2g.write(dados_mapa)
+                c2g[Name("/Filter")] = Name("/FlateDecode")
             n += 1
         except Exception as ex:
             log(f"    subset CID: {ex}")
@@ -1954,6 +1975,9 @@ def _subset_fontes(pdf, log):
                     continue  # nao sabemos mapear todos: nao arriscar
                 opts = subset.Options()
                 opts.layout_features = ["*"]
+                # ver _subset_fontes_cid: hinting fora por padrao
+                if os.environ.get("COMPRESSPDF_HINT", "0") != "1":
+                    opts.hinting = False
                 ss = subset.Subsetter(opts)
                 ss.populate(glyphs=sorted(nomes))
                 ss.subset(tt)

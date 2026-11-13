@@ -307,8 +307,19 @@ Texto extraído e hyperlinks: **idênticos ao original em todos os 21 casos**.
   motor não perde a última linha e usa `ceil` em imagem recortada → 315.
   Era o último pixel que faltava (extreme `248x315`, recommended
   `516x655`/`600x496`).
+- **Subset com `/CIDToGIDMap /Identity` (corrigido em 12/11)**: o código pulava
+  esse caso (`if c2g is None or isinstance(c2g, Name): continue`), então
+  Type0/CIDFontType2 com mapa Identity mantinha o programa inteiro. Caso real
+  (`REA-lab\x\x.pdf`): ArialMT 101.823 → 7.126 B e Wingdings 15.192 → 4.954 B;
+  o arquivo caiu de 238.175 → 132.590 B no recommended (iLovePDF: 101.754).
+  O mapa é reconstruído como stream depois do subset.
+- **Hinting fora do subset (novo padrão)**: `opts.hinting = False` corta ~40%
+  do programa. No `x.pdf`: 132.590 → 82.718 B (recommended) com **0,000% de
+  diferença de render em 72/150/300 dpi** e texto idêntico; no corpus, PSNR
+  (33,22 vs 30,79 dB), render (0,058% vs 0,135%) e SSIM (0,9990 vs 0,9984)
+  seguem melhores que o iLovePDF. `COMPRESSPDF_HINT=1` restaura o hinting.
 - **Limitações que restam** (medidas): **21/21 combinações estruturalmente
-  idênticas** às do iLovePDF e **nenhum arquivo maior** (total −3,9%).
+  idênticas** às do iLovePDF e **nenhum arquivo maior** (total −5,4%).
 - Sem `MergeEmbeddedFonts`/`ConvertToCFF`, sem MRC, sem `ClipImages` de paths
   curvos (só retangulares — os demais são ignorados por segurança).
 - Rede de segurança: após comprimir, o render é comparado com o original; se

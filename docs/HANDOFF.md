@@ -123,7 +123,7 @@ Scripts de avaliação (em `C:\Users\Gustavo\AppData\Local\Temp\rea_lab2\`):
 
 | eixo | nosso | iLovePDF |
 |---|---|---|
-| tamanho total | **4.040.126 B** | 4.203.565 B (**−3,9%**) |
+| tamanho total | **3.977.419 B** | 4.203.565 B (**−5,4%**) |
 | menor em | **21 / 21** | 0 |
 | algum arquivo maior | **nenhum** | — |
 | PSNR por imagem (158) | **33,22 dB** | 30,79 dB |
@@ -278,3 +278,34 @@ re-codificada; fim do "Flate de resgate" (extreme/low são só JPEG); corte de
 60 pt no lado menor desenhado; alvo de pixels em float32 com `round` do C; e
 `ceil` no alvo de imagem recortada pelo ClipImages (não perde a última linha).
 Ver `METODO.md` §4b.
+
+---
+
+## Caso `REA-lab\x` — por que o iLovePDF parecia "muito superior"
+
+`x.pdf` tem 711.716 B e **91% do peso em 6 programas de fonte** (Calibri 198 KB,
+Calibri-Bold 197 KB, Calibri-Italic 102 KB, ArialMT 102 KB, Arial-Black 31 KB,
+Wingdings 15 KB); as imagens somam só 5,7 KB. O gargalo era fonte, não imagem.
+
+| nível | nós (antes) | nós (agora) | iLovePDF |
+|---|---|---|---|
+| recommended | 238.175 | **82.718** | 101.754 |
+| low | 238.507 | **83.026** | 101.760 |
+| extreme | 220.237 | **64.727** | 78.689 |
+
+Duas causas, ambas corrigidas:
+
+1. **`/CIDToGIDMap /Identity` era pulado** em `_subset_fontes_cid`
+   (`if c2g is None or isinstance(c2g, Name): continue`): ArialMT e Wingdings
+   (Type0/CIDFontType2) ficavam com o programa inteiro. Agora o mapa é
+   reconstruído como stream (CID → novo GID); texto continua idêntico.
+2. **Hinting fora do subset** (novo padrão): corta ~40% do programa, medido
+   0,000% de diferença de render em 72/150/300 dpi neste arquivo.
+
+Corpus: total −3,9% → **−5,4%** (3.977.419 B), nenhum arquivo maior, paridade
+estrutural 0/21.
+
+Diferença que permanece — e é a nosso favor: no extreme o iLovePDF reduz a
+imagem 134x125 para 48x45 (dpi 199, desenhada em 48x45 pt); nosso corte de
+60 pt no lado menor desenhado (fitado para casar o NS8002) mantém 134x125.
+Neste arquivo entregamos mais detalhe e ainda assim ~18% menor.
