@@ -35,18 +35,27 @@ pip install -r requirements.txt
 
 ## Executável (Windows)
 
+Dois formatos, mesma base de código (ver `docs/COMANDOS.md`):
+
 ```bash
-python scripts/build_exe.py          # gera dist/PDFagent.exe (onefile)
+python scripts/build_exe.py            # ambos
+python scripts/build_exe.py --onedir   # dist/PDFagent/  (instalador; start ~0,3 s)
+python scripts/build_exe.py --onefile  # dist/PDFagent.exe (portátil; start ~2,6 s)
 ```
 
-`PDFagent.exe` sem argumentos abre a interface gráfica; com argumentos funciona
-como linha de comando (o próprio .exe anexa o console do pai):
+- **`dist/PDFagent/`** (onedir, 134 MB em disco) é o que o instalador leva:
+  abre em ~0,3 s porque não extrai nada. Inclui os shims `*.cmd`.
+- **`dist/PDFagent.exe`** (58,6 MB) é o portátil: um arquivo só, mas extrai o
+  bundle a cada execução (~2,6 s de start).
+
+Comandos (o `.exe` sem argumentos abre a GUI):
 
 ```bash
-dist\PDFagent.exe                                  # GUI
-dist\PDFagent.exe entrada.pdf -n low               # CLI
-dist\PDFagent.exe pasta\ -n recommended --saida-dir out\
-dist\PDFagent.exe --version
+PDFagent                                      # GUI
+PDFagent compress entrada.pdf -n low          # subcomando
+PDFagent entrada.pdf -n recommended           # atalho (mesmo que compress)
+pdfcompress entrada.pdf -n low                # shim no PATH (se instalado)
+PDFagent --version | --help
 ```
 
 O `CompressPDF.bat` usa o `dist\PDFagent.exe` quando ele existe e cai para

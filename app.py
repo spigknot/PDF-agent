@@ -3,6 +3,7 @@
 # Uso:  python app.py
 import os
 import queue
+import sys
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -150,10 +151,15 @@ def _anexa_console():
         pass
 
 
+def run_gui(argv=None):
+    """Abre a interface gráfica (subcomando `gui` do cli.py)."""
+    App().mainloop()
+    return 0
+
+
 if __name__ == "__main__":
     argv = sys.argv[1:]
     if argv:
         _anexa_console()
-        compress.main(argv)      # argparse cuida de -V/--version e erros
-    else:
-        App().mainloop()
+    import cli
+    sys.exit(cli.main(argv) or 0)

@@ -105,20 +105,25 @@ PASS — tudo dentro do esperado
 
 ```bash
 "$LOCALAPPDATA/Programs/Python/Python311/python.exe" scripts/build_exe.py
-# → dist/PDFagent.exe (~120 MB, ~100 s)
+# → dist/PDFagent/        onedir, com _internal (é o que o instalador leva; start ~0,3 s)
+# → dist/PDFagent.exe     portátil onefile (start ~2,6 s)
+# → dist/PDFagent/*.cmd   shims por subcomando (gerar_shims.py)
 
 "/c/Users/Gustavo/AppData/Local/Programs/Inno Setup 6/ISCC.exe" instalador/PDFagent.iss
-# → dist/PDFagent-Setup-<versao>.exe (~117 MB)
+# → dist/PDFagent-Setup-<versao>.exe (~44 MB)
 ```
 
 **Smoke test (obrigatório — não confie no build):**
 
 ```bash
-./dist/PDFagent.exe --version                      # PDFagent <versao>
+./dist/PDFagent/PDFagent.exe --version                 # onedir
+./dist/PDFagent.exe --version                          # onefile portátil
+./dist/PDFagent/PDFagent.exe compress arquivo.pdf -n low
+cmd /c "dist\\PDFagent\\pdfcompress.cmd arquivo.pdf -n low"   # shim
 T="$LOCALAPPDATA/Temp/rel"; rm -rf "$T"; mkdir -p "$T"
 cp "C:/Users/Gustavo/Desktop/REA-lab/x/x.pdf" "$T/r.pdf"
-./dist/PDFagent.exe --in-place -n recommended "$T/r.pdf"
-ls "$T"                                            # r.pdf (menor) + r_old.pdf
+./dist/PDFagent/PDFagent.exe --in-place -n recommended "$T/r.pdf"   # linha do menu
+ls "$T"                                                # r.pdf (menor) + r_old.pdf
 ```
 
 Instalador (testa tarefas PATH + menu de contexto):

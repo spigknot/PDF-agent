@@ -34,7 +34,8 @@ Name: "addpath"; Description: "Adicionar ao PATH do usuário (permite chamar ""P
 Name: "contextmenu"; Description: "Adicionar ""PDFagent > Comprimir"" ao menu de contexto de arquivos PDF"
 
 [Files]
-Source: "..\dist\{#Exe}"; DestDir: "{app}"; Flags: ignoreversion
+; onedir: pasta inteira (start ~0,3 s). O onefile continua na release como portátil.
+Source: "..\dist\PDFagent\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#Nome}"; Filename: "{app}\{#Exe}"

@@ -93,6 +93,23 @@ def teste_exit_code():
     return item("CLI falha com exit code != 0", ok, "rc=%d" % rc)
 
 
+def teste_cli():
+    """Contrato do cli.py: subcomando, retrocompatibilidade e rc de uso."""
+    app = os.path.join(RAIZ, "app.py")
+    rc1, s1 = roda([PY, app, "--version"])
+    rc2, s2 = roda([PY, app, "--help"])
+    rc3, _ = roda([PY, app, "comando_que_nao_existe"])
+    problemas = []
+    if not (rc1 == 0 and "PDFagent" in s1):
+        problemas.append("--version")
+    if not (rc2 == 0 and "compress" in s2 and "gui" in s2):
+        problemas.append("--help sem comandos")
+    if rc3 != 2:
+        problemas.append("comando invalido rc=%d (esperado 2)" % rc3)
+    return item("CLI: subcomandos + retrocompatibilidade", not problemas,
+                ", ".join(problemas))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--lab", default=LAB_PADRAO)
@@ -101,7 +118,7 @@ def main():
     args = ap.parse_args()
 
     print("== verificacao do compressor ==  (%s)" % RAIZ)
-    resultados = [teste_niveis(), teste_exit_code(), teste_launcher()]
+    resultados = [teste_niveis(), teste_exit_code(), teste_cli(), teste_launcher()]
     par_ok, _n_difs = teste_paridade(args.lab, args.max_difs)
     resultados.append(par_ok)
 
