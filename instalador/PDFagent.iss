@@ -48,6 +48,10 @@ Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.pdf\shell\PDFagent
 Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.pdf\shell\PDFagent"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#Exe},0"; Flags: uninsdeletekey; Tasks: contextmenu
 Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.pdf\shell\PDFagent\shell\comprimir"; ValueType: string; ValueName: "MUIVerb"; ValueData: "Comprimir"; Flags: uninsdeletekey; Tasks: contextmenu
 Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.pdf\shell\PDFagent\shell\comprimir\command"; ValueType: string; ValueData: """{app}\{#Exe}"" --in-place -n recommended --avisar ""%1"""; Flags: uninsdeletekey; Tasks: contextmenu
+; --- submenu: Dividir (comprime antes; limite padrão de 10 MB) -------------
+Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.pdf\shell\PDFagent\shell\dividir"; ValueType: string; ValueName: "MUIVerb"; ValueData: "Dividir"; Flags: uninsdeletekey; Tasks: contextmenu
+Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.pdf\shell\PDFagent\shell\dividir"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#Exe},0"; Flags: uninsdeletekey; Tasks: contextmenu
+Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.pdf\shell\PDFagent\shell\dividir\command"; ValueType: string; ValueData: """{app}\{#Exe}"" split ""%1"" --avisar"; Flags: uninsdeletekey; Tasks: contextmenu
 
 [Run]
 Filename: "{app}\{#Exe}"; Description: "Abrir o {#Nome} agora"; Flags: nowait postinstall skipifsilent

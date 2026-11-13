@@ -15,6 +15,11 @@ COMMANDS = {
         "alvo": ("compress", "main"),
         "shim": "pdfcompress",
     },
+    "split": {
+        "help": "divide um PDF em partes por limite de tamanho (comprime antes)",
+        "alvo": ("commands.split", "main"),
+        "shim": "pdfsplit",
+    },
     "gui": {
         "help": "abre a interface gráfica (padrão quando não há argumentos)",
         "alvo": ("app", "run_gui"),

@@ -53,10 +53,28 @@ Comandos (o `.exe` sem argumentos abre a GUI):
 ```bash
 PDFagent                                      # GUI
 PDFagent compress entrada.pdf -n low          # subcomando
+PDFagent split entrada.pdf --limite 1M        # divide (comprime antes)
+PDFagent split entrada.pdf --limite 1M --sem-comprimir
 PDFagent entrada.pdf -n recommended           # atalho (mesmo que compress)
 pdfcompress entrada.pdf -n low                # shim no PATH (se instalado)
+pdfsplit entrada.pdf --limite 5M              # shim no PATH
 PDFagent --version | --help
 ```
+
+### Dividir
+
+Divide por **páginas inteiras** (nunca corta uma página): cada parte fica com o
+máximo de páginas consecutivas que ainda cabe no limite. Se o PDF inteiro já
+cabe, não há divisão.
+
+- **Comprime antes por padrão** (`-n recommended`): muitas vezes o arquivo
+  comprimido já cabe no limite e nada é dividido. Use `--sem-comprimir` para
+  dividir o original.
+- Saída: `<nome>_parte1.pdf`, `_parte2.pdf`, … na mesma pasta (ou `-o pasta`).
+- No menu de contexto: **PDFagent → Dividir** (comprime e usa o limite padrão de
+  10 MB; ajustável pela variável `PDFAGENT_LIMITE`, ex.: `PDFAGENT_LIMITE=5M`).
+- Página sozinha maior que o limite é emitida mesmo assim, com aviso — não há
+  como respeitar o limite sem cortá-la.
 
 O `CompressPDF.bat` usa o `dist\PDFagent.exe` quando ele existe e cai para
 `python app.py` quando não existe (modo desenvolvimento).

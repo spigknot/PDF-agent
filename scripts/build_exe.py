@@ -50,6 +50,8 @@ def _build(onedir=False, debug=False):
         "--exclude-module", "PIL._avif",
         "--hidden-import", "fitz",
         "--collect-submodules", "fontTools",
+        # comandos sao carregados dinamicamente pelo cli.py (__import__)
+        "--collect-submodules", "commands",
         APP,
     ]
     cmd.insert(4, "--console" if debug else "--windowed")
