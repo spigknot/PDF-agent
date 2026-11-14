@@ -713,11 +713,19 @@ def _substitui_fontes_padrao(pdf, log):
                         enc_nome = str(base) if base is not None else None
                     except Exception:
                         continue
-                # troca o dicionario inteiro (como o original)
+                # troca o dicionario inteiro (como o original), mas preserva o
+                # /ToUnicode: sem ele a extracao da pagina vira \x01\x02... (o
+                # mapeamento codigo->texto vivia no CMap, nao na encoding).
                 campos = {"Type": Name("/Font"), "Subtype": Name("/Type1"),
                           "BaseFont": Name(alvo)}
                 if enc_nome:
                     campos["Encoding"] = Name(enc_nome)
+                try:
+                    tou = fo.get("/ToUnicode")
+                    if tou is not None:
+                        campos["ToUnicode"] = tou
+                except Exception:
+                    pass
                 novo = pikepdf.Dictionary(**campos)
                 desc = fo.get("/FontDescriptor")
                 if desc is not None:
@@ -2132,6 +2140,17 @@ def _codigos_por_fonte(pdf):
                             cur = p.decode("latin-1")
                             break
                     pend = []
+                    # fonte SELECIONADA por Tf conta como usada mesmo que nao
+                    # consigamos ler nenhum glifo dela: sem isso ela e' apagada
+                    # do /Resources e a pagina fica sem fonte (processo.pdf
+                    # pg148, /R72 -> extracao vira \x00\x01...).
+                    if cur is not None:
+                        try:
+                            fo_tf = res.get("/Font", {}).get(Name(cur))
+                            if fo_tf is not None:
+                                por_obj[fo_tf.objgen]  # cria a entrada (set vazio)
+                        except Exception:
+                            pass
                 elif val in (b"Tj", b"TJ", b"'", b'"') and cur is not None:
                     for tp, p in pend:
                         if tp in ("str", "hex"):
@@ -2203,18 +2222,53 @@ def _eh_dict(obj):
     return _tipo_obj(obj) in ("dictionary", "stream")
 
 
+def _impressao_rapida(obj):
+    """crc32 de uma representacao SEM truncamento.
+
+    `str()` de um Object do pikepdf corta a saida (ex.: um /Encoding com 257
+    /Differences aparece como `<pikepdf.Dictionary(...)({... "Differences": [ `),
+    entao usar str() como identidade faz fontes DIFERENTES colidirem: 3 Type3
+    distintos de processo.pdf cairam na mesma assinatura e a extracao de texto
+    passou a sair como `\\x00\\x01...` nas paginas 148-151/179/209/221.
+    """
+    try:
+        dados = _serializa_obj(obj)
+    except Exception:
+        try:
+            dados = str(obj).encode("latin-1", "replace")
+        except Exception:
+            return 0
+    return zlib.crc32(dados)
+
+
 def _assinatura_fonte(fo):
     """Identidade da fonte: mesmo BaseFont + mesmo programa + mesmas larguras
     => os objetos sao intercambiaveis."""
     bf = str(fo.get("/BaseFont", ""))
     sub = str(fo.get("/Subtype", ""))
-    enc = str(fo.get("/Encoding", ""))
+    enc = ""
+    try:
+        e = fo.get("/Encoding")
+        if e is not None:
+            # Name -> texto; dict (Differences!) -> impressao digital completa
+            enc = str(e) if isinstance(e, Name) else "%d" % _impressao_rapida(e)
+    except Exception:
+        pass
     larg = ""
     try:
         if "/Widths" in fo:
-            larg = repr([int(x) for x in list(fo["/Widths"])[:8]]) + "/%d" % len(fo["/Widths"])
+            larg = "%d:%d" % (len(fo["/Widths"]), _impressao_rapida(fo["/Widths"]))
         elif "/W" in fo:
-            larg = repr(fo["/W"])[:80]
+            larg = "%d:%d" % (len(fo["/W"]), _impressao_rapida(fo["/W"]))
+    except Exception:
+        pass
+    # Type3 nao tem FontDescriptor: os charprocs sao parte da identidade
+    procs = ""
+    try:
+        cp = fo.get("/CharProcs")
+        if cp is not None and _eh_dict(cp):
+            procs = "%d" % zlib.crc32(
+                "|".join(sorted(str(k) for k in cp.keys())).encode("latin-1", "replace"))
     except Exception:
         pass
     prog = b""
@@ -2240,7 +2294,7 @@ def _assinatura_fonte(fo):
             tou = ("%d:%d" % (len(bruto), zlib.crc32(bruto))).encode()
     except Exception:
         pass
-    return (bf, sub, enc, larg, prog, tou)
+    return (bf, sub, enc, larg, prog, tou, procs)
 
 
 def _consolida_imagens(pdf, log):
@@ -2593,6 +2647,7 @@ def _consolida_fontes(pdf, log):
             except Exception:
                 continue
             canonico = mapa.get(og)
+            og_orig = og
             if canonico is not None:
                 try:
                     fontes[nome] = pdf.get_object(canonico)
@@ -2600,19 +2655,24 @@ def _consolida_fontes(pdf, log):
                     og = canonico
                 except Exception:
                     pass
-            # fonte sem nenhum glifo usado: sai do resource (o motor nao a grava)
-            if og and og[0] and og not in usados:
-                apagar.append(nome)
+            # a decisao de remover usa a identidade ORIGINAL: o canonico pode
+            # ser uma copia que nao aparece em `usados` (ex.: a primeira fonte
+            # padrao da varredura) e apagar por causa dele derrubava fontes
+            # realmente usadas (processo.pdf pg148 /R72 -> texto virava lixo).
+            if og_orig and og_orig[0] and og_orig not in usados:
+                apagar.append((nome, og_orig))
         # NUNCA esvaziar um /Font: se TODAS seriam removidas, o conteudo
         # daquela pagina provavelmente nao pode ser lido (imagem inline, CMap
         # quebrado) e apagar tudo deixa a pagina sem fonte — o texto continua
         # desenhado pelo leitor mas a extracao vira lixo (processo.pdf pg337).
         if len(apagar) == len(fontes):
             apagar = []
-        for nome in apagar:
+        for nome, og in apagar:
             try:
                 del fontes[nome]
                 removidos += 1
+                if os.environ.get("COMPRESSPDF_DEBUG_FONTES"):
+                    log("      remove /%s (objgen %s)" % (nome, og))
             except Exception:
                 pass
         return 1
@@ -2703,6 +2763,221 @@ def _consolida_fontes(pdf, log):
         "[%d dict(s) /Font, %d entrada(s)]"
         % (len(mapa), len(vistos), trocas, removidos, dicts, entradas))
     return mapa
+
+
+def _merge_subset_fontes(pdf, log):
+    """Subseta UMA vez por fonte-fonte e compartilha o programa (MergeEmbeddedFonts).
+
+    O motor grava um programa por fonte-fonte e aponta todos os dicionarios para
+    ele. Medido em processo.pdf (extreme): 61 BaseFonts, 92 programas/911 KB no
+    iLovePDF contra 163/1.612 KB nossos. Aqui os dicionarios que embutem os
+    MESMOS bytes de programa sao agrupados, o subset usa a UNIAO dos glifos do
+    grupo e todos passam a apontar para o stream canonico.
+
+    Para Type0/CID o /CIDToGIDMap de cada fonte e' reconstruido contra a ordem
+    de glifos resultante (que agora e' compartilhada).
+
+    Devolve quantas fontes foram processadas (0 = nada feito, o chamador cai no
+    caminho antigo).
+    """
+    if os.environ.get("COMPRESSPDF_MERGE", "1") == "0":
+        return 0
+    try:
+        from fontTools import subset
+        from fontTools.ttLib import TTFont
+    except ImportError:
+        return 0
+
+    membros = []          # dicts com o necessario para subsetar/compartilhar
+    vistos = set()
+
+    def _fonte_simples(og, codes):
+        try:
+            fo = pdf.get_object(og)
+            if str(fo.get("/Subtype", "")) == "/Type0":
+                return None
+            fd = fo.get("/FontDescriptor")
+        except Exception:
+            return None
+        if fd is None or not _eh_dict(fd):
+            return None
+        fkey = next((k for k in ("/FontFile2", "/FontFile3", "/FontFile")
+                     if k in fd), None)
+        if fkey is None:
+            return None
+        return {"fo": fo, "fd": fd, "fkey": fkey, "codigos": set(codes),
+                "tipo": "simple", "d0": None, "mapa": None, "identidade": True}
+
+    def _fonte_cid(fo, codigos):
+        try:
+            if str(fo.get("/Subtype", "")) != "/Type0":
+                return None
+            if str(fo.get("/Encoding", "")) != "/Identity-H":
+                return None
+            desc = fo.get("/DescendantFonts")
+            if desc is None or len(desc) == 0:
+                return None
+            d0 = desc[0]
+            if str(d0.get("/Subtype", "")) != "/CIDFontType2":
+                return None
+            fd = d0.get("/FontDescriptor")
+            if fd is None or not _eh_dict(fd):
+                return None
+            ff = fd.get("/FontFile2")
+            if ff is None:
+                return None
+            c2g = d0.get("/CIDToGIDMap")
+            identidade = c2g is None or isinstance(c2g, Name)
+            mapa = None
+            if not identidade:
+                try:
+                    mapa = c2g.read_bytes()
+                except Exception:
+                    return None
+        except Exception:
+            return None
+        return {"fo": fo, "fd": fd, "fkey": "/FontFile2", "codigos": set(codigos),
+                "tipo": "cid", "d0": d0, "mapa": mapa, "identidade": identidade}
+
+    for og, codes in _codigos_por_fonte(pdf).items():
+        if not codes:
+            continue
+        m = _fonte_simples(og, codes)
+        if m is not None:
+            membros.append(m)
+    for fo, codigos, _w in _usos_por_fonte(pdf):
+        if not codigos:
+            continue
+        try:
+            chave = fo.objgen
+        except Exception:
+            continue
+        if chave in vistos:
+            continue
+        vistos.add(chave)
+        m = _fonte_cid(fo, codigos)
+        if m is not None:
+            membros.append(m)
+    if not membros:
+        return 0
+
+    # agrupa por BYTES do programa (mesma fonte-fonte literal). Agrupar por
+    # BaseFont e subsetar pela uniao de glifos foi medido e PIORA ~160 KB em
+    # processo.pdf: o motor nao faz uniao, cada copia mantem o seu subset.
+    grupos = {}
+    for m in membros:
+        try:
+            raw = m["fd"][m["fkey"]].read_bytes()
+        except Exception:
+            continue
+        m["raw"] = raw
+        grupos.setdefault((len(raw), zlib.crc32(raw)), []).append(m)
+
+    tag = _tag_subset(pdf)
+    processados = 0
+    programas_antes = len(grupos)
+    for _chave, membros_g in grupos.items():
+        if not membros_g:
+            continue
+        try:
+            # o maior programa e' o canonico (tem o conjunto de glifos completo)
+            canon = max(membros_g, key=lambda x: len(x["raw"]))
+            tt = TTFont(io.BytesIO(canon["raw"]))
+            ordem = tt.getGlyphOrder()
+            ordem_set = set(ordem)
+            nomes_uniao = set()
+            por_codigo = []
+            falhou = False
+            for m in membros_g:
+                if m["tipo"] == "simple":
+                    nomes, diff_map, tab_base = _nomes_glifos_usados(
+                        m["fo"], m["codigos"], tt)
+                    if not nomes:
+                        falhou = True
+                        break
+                    nomes = set(nomes)
+                    # glifo que o canonico nao tem: nao arriscar a fusao
+                    if not nomes <= ordem_set:
+                        falhou = True
+                        break
+                    nomes_uniao |= nomes
+                    por_codigo.append(None)
+                else:
+                    c2n = {}
+                    for cid in m["codigos"]:
+                        if m["identidade"]:
+                            g = cid
+                        else:
+                            mp = m["mapa"] or b""
+                            g = ((mp[2 * cid] << 8) | mp[2 * cid + 1]
+                                 if 2 * cid + 1 < len(mp) else None)
+                        if g is not None and 0 < g < len(ordem):
+                            c2n[cid] = ordem[g]
+                    if not c2n:
+                        falhou = True
+                        break
+                    nomes_uniao |= set(c2n.values())
+                    por_codigo.append(c2n)
+            if falhou or not nomes_uniao:
+                continue
+            total_antes = sum(len(m["raw"]) for m in membros_g)
+            opts = subset.Options()
+            opts.layout_features = ["*"]
+            _politica_subset(opts)
+            ss = subset.Subsetter(opts)
+            ss.populate(glyphs=sorted(nomes_uniao))
+            ss.subset(tt)
+            _normaliza_nome_programa(tt, canon["fo"].get("/BaseFont", ""))
+            buf = io.BytesIO()
+            tt.save(buf)
+            novo = buf.getvalue()
+            if len(novo) >= total_antes:
+                continue
+            nome2gid = {nm: i for i, nm in enumerate(tt.getGlyphOrder())}
+            # stream canonico do programa compartilhado
+            canonico = pdf.make_stream(b"")
+            canonico.write(zlib.compress(novo, 9), filter=Name("/FlateDecode"),
+                           type_check=False)
+            canonico[Name("/Length1")] = len(novo)
+            for m, c2n in zip(membros_g, por_codigo):
+                try:
+                    m["fd"][m["fkey"]] = canonico
+                    base = str(m["fo"].get("/BaseFont", "")).lstrip("/")
+                    if "+" in base:
+                        base = base.split("+", 1)[1]
+                    m["fo"][Name("/BaseFont")] = Name("/%s+%s" % (tag, base))
+                    if m["tipo"] == "cid" and m["d0"] is not None:
+                        try:
+                            m["d0"][Name("/BaseFont")] = Name("/%s+%s" % (tag, base))
+                        except Exception:
+                            pass
+                        maxcid = max(c2n)
+                        mapa_novo = bytearray(2 * (maxcid + 1))
+                        for cid, nome in c2n.items():
+                            g = nome2gid.get(nome, 0)
+                            mapa_novo[2 * cid] = (g >> 8) & 0xFF
+                            mapa_novo[2 * cid + 1] = g & 0xFF
+                        if m["identidade"]:
+                            # GIDs preservados: /Identity continua valido
+                            pass
+                        else:
+                            try:
+                                m["d0"][Name("/CIDToGIDMap")].write(
+                                    zlib.compress(bytes(mapa_novo), 9))
+                            except Exception:
+                                novo_c2g = pdf.make_stream(zlib.compress(bytes(mapa_novo), 9))
+                                novo_c2g[Name("/Filter")] = Name("/FlateDecode")
+                                m["d0"][Name("/CIDToGIDMap")] = novo_c2g
+                    processados += 1
+                except Exception:
+                    continue
+        except Exception as ex:
+            log("    merge fonte %s: %s" % (_crc, ex))
+            continue
+    if processados:
+        log("    fontes: %d copia(s) -> %d programa(s), %d fonte(s) reapontada(s)"
+            % (len(membros), len(grupos), processados))
+    return processados
 
 
 def _subset_fontes(pdf, log):
@@ -3588,8 +3863,16 @@ def comprimir(entrada, saida, nivel="recommended", log=print, _guard=None,
         if spec.get("remove_fontes_padrao"):
             _substitui_fontes_padrao(pdf, log)
         if spec.get("subset_fontes", True):
-            _subset_fontes(pdf, log)
-            _subset_fontes_cid(pdf, log)
+            feitos = 0
+            try:
+                feitos = _merge_subset_fontes(pdf, log)
+            except Exception as ex:
+                log("    merge de fontes falhou: %s" % ex)
+                feitos = 0
+            if not feitos:
+                # caminho antigo: subset por dicionario de fonte
+                _subset_fontes(pdf, log)
+                _subset_fontes_cid(pdf, log)
             if not _sem_risco and _TENTA_CFF:
                 _subset_fontes_cff(pdf, log)
         # RemoveRedundantObjects/MergeEmbeddedFonts do motor: consolida fontes,

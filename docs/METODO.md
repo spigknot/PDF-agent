@@ -448,3 +448,36 @@ Achados desta rodada (14/11):
 - **Fonte padrao sem `/Encoding`**: `_substitui_fontes_padrao` forcava
   `/WinAnsiEncoding`; no ZapfDingbats (encoding embutida) isso trocava o glifo
   e a extracao ("G" -> "l"). Agora, sem `/Encoding`, a chave e' omitida.
+
+### Rodada 3 (14/11, noite) — comparacao com extreme/low reais do iLovePDF
+
+| nivel | nosso | iLovePDF | Δ |
+|---|---|---|---|
+| recommended | 12.251.998 B | 12.227.010 B | +24.988 (+0,20%) |
+| extreme | 9.465.733 B | 9.275.878 B | +189.855 (+2,05%) |
+| low | **15.924.556 B** | 16.565.289 B | **−640.733 (−3,87%)** |
+
+Texto extraido vs original: recommended **0/376**, low **0/376**, extreme 3/376
+(pg 179/209/221, so acento e espaco de fim de linha: "Oficio" -> "Oİcio").
+Render vs a referencia de cada nivel: 0,114% no pior caso (pg338, mascara 1-bit).
+
+Causas-raiz desta rodada:
+
+- **Assinaturas digitais saem nos TRES niveis** (as 3 saidas de referencia tem
+  0 `/Type /Sig` e 0 widget `/FT /Sig`). Antes o low mantinha 214+214 (~1,4 MB):
+  o nivel passou de +1,59 MB para −640 KB.
+- **Assinatura de fonte truncada**: `str()` de um `/Encoding` com 257
+  `/Differences` corta a saida, e 3 Type3 DIFERENTES colidiam na mesma
+  assinatura (extracao virava ` ...`). Agora `/Encoding`, `/Widths` e
+  `/CharProcs` entram por impressao digital sem truncamento.
+- **Fonte selecionada por `Tf` conta como usada**, mesmo sem glifo lido: sem
+  isso `/R72` era apagado do `/Resources` da pg148 e a pagina ficava sem fonte.
+- **Remocao de fonte usava o objgen CANONICO** (pos-consolidacao); se a copia
+  canonica nao aparecesse em `usados`, todas as fontes fundidas nela eram
+  apagadas. Agora decide pelo objgen ORIGINAL.
+- **`/ToUnicode` sobrevive a substituicao por padrao-14**: o mapeamento
+  codigo->texto vivia no CMap; sem ele "fls. 1" virava `...`.
+- **`MergeEmbeddedFonts` testado e rejeitado**: agrupar por BaseFont e subsetar
+  pela uniao de glifos PIORA ~160 KB (medido nos 3 niveis). O motor nao faz
+  uniao; cada copia mantem o seu subset. O caminho fica atras de
+  `COMPRESSPDF_MERGE` e so funde programas byte a byte identicos.

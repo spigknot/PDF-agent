@@ -123,7 +123,7 @@ Scripts de avaliação (em `C:\Users\Gustavo\AppData\Local\Temp\rea_lab2\`):
 
 Corpus de estresse fora do gate. `processo.pdf` (34.070.740 B) →
 **12.244.996 B (−64,0%)** contra **12.227.010 B** do iLovePDF (recommended);
-extreme 9.450.995 B (−72,3%) contra 9.275.878 B; low 15.910.221 B (−53,3%) contra 16.565.289 B (**−3,95%**). Tempo 148–156 s.
+extreme 9.465.733 B (−72,2%) contra 9.275.878 B (+2,05%); low 15.924.556 B (−53,3%) contra 16.565.289 B (**−3,87%**). Texto extraido: recommended e low 0/376, extreme 3/376 (acento/espaco). Tempo 148–156 s.
 
 - **Texto extraído idêntico ao original nas 376 páginas** (era 7 páginas com
   divergência: `/ToUnicode` fora da identidade da fonte e fontes apagadas por
