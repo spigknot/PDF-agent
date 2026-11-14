@@ -519,3 +519,24 @@ Causas-raiz desta rodada:
 - **Paralelismo do subset REJEITADO**: `ProcessPool` com 164 grupos deu 151,9 s
   contra ~150 s em serie (serializar os programas para os workers come o
   ganho). O worker `_subset_programa` fica no codigo, o pool desligado.
+
+### Perfil de tempo (T7.1 do plano) — processo.pdf, recommended, 146,5 s
+
+| bloco | tempo | % |
+|---|---|---|
+| `[3]` imagens (503 imagens, 383 recomprimidas) | **82,0 s** | **56%** |
+| subset de fontes (164 programas) | **52,5 s** | **36%** |
+| consolidações + remapeamento | 2,6 s | 1,8% |
+| `[5]` save (`object_streams` + flate 9) | 8,0 s | 5,5% |
+| strip/normaliza/unifica/carimbo | ~1 s | <1% |
+
+Conclusão: o gargalo é **imagem**, não fonte (a intuição dizia o contrário). O
+`ProcessPool` no subset não compensa (151,9 s x ~150 s) porque o custo é
+serializar os programas. Para atacar os 82 s de imagem seria preciso
+decodificar/encodar em processo separado — o `pikepdf.Object` não é picklable,
+então teria de passar bytes + parâmetros e reescrever o resultado no processo
+principal. Fica como próximo passo, fora deste plano.
+
+**Variância de execução**: o mesmo código produz 12.096.302–12.103.750 B
+(~7 KB) entre rodadas; o gate usa tolerância (1.000/1.015/0,990) em vez de
+exigir byte exato.

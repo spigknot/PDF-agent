@@ -4013,7 +4013,14 @@ def comprimir(entrada, saida, nivel="recommended", log=print, _guard=None,
     if nivel not in LEVELS:
         raise ValueError(f"nivel invalido: {nivel}")
     spec = LEVELS[nivel]
-    log(f"[1] abrindo {os.path.basename(entrada)} (nivel {spec['rotulo']})")
+    import time as _time
+    _t0 = _time.time()
+
+    def _etapa(rotulo):
+        """Prefixa a linha de fase com o tempo decorrido (T7.1 do plano)."""
+        return "%s (+%.1fs)" % (rotulo, _time.time() - _t0)
+
+    log(_etapa(f"[1] abrindo {os.path.basename(entrada)} (nivel {spec['rotulo']})"))
     pdf = pikepdf.open(entrada)
     try:
         if pdf.is_encrypted:
@@ -4028,7 +4035,7 @@ def comprimir(entrada, saida, nivel="recommended", log=print, _guard=None,
         except Exception:
             pass
 
-        log("[2] mapeando imagens e DPI efetivo")
+        log(_etapa("[2] mapeando imagens e DPI efetivo"))
         _CLIPADOS.clear()
         if spec.get("clip", False) and not _sem_risco:
             _aplica_clip_imagens(pdf, log)
@@ -4052,13 +4059,13 @@ def comprimir(entrada, saida, nivel="recommended", log=print, _guard=None,
                     trocadas += bool(trocou)
                 except Exception as ex:
                     log(f"    imagem ignorada: {ex}")
-        log(f"[3] imagens: {trocadas}/{total} recomprimidas")
+        log(_etapa(f"[3] imagens: {trocadas}/{total} recomprimidas"))
         try:
             _recomprime_mascaras(pdf, spec, usos, log)
         except Exception as ex:
             log("    mascaras: %s" % ex)
 
-        log("[4] strip/otimizacoes de documento")
+        log(_etapa("[4] strip/otimizacoes de documento"))
         _aplica_strip(pdf, spec["strip"], log)
         if "structtree" in spec["strip"]:
             _remove_marcadores_mc(pdf, log)
@@ -4079,6 +4086,7 @@ def comprimir(entrada, saida, nivel="recommended", log=print, _guard=None,
                 _subset_fontes_cid(pdf, log)
             if not _sem_risco and _TENTA_CFF:
                 _subset_fontes_cff(pdf, log)
+            log(_etapa("    subset de fontes concluido"))
         # RemoveRedundantObjects/MergeEmbeddedFonts do motor: consolida fontes,
         # imagens, charprocs Type3 e programas de fonte identicos e depois
         # reaponta as referencias no documento INTEIRO (nao so em /Resources).
@@ -4090,6 +4098,7 @@ def comprimir(entrada, saida, nivel="recommended", log=print, _guard=None,
             except Exception as ex:
                 log("    consolidacao %s falhou: %s" % (_consolida.__name__, ex))
         _reaponta_tudo(pdf, mapa_dup, log)
+        log(_etapa("    consolidacoes concluidas"))
         _carimba(pdf, log, xmp_original)
         if spec.get("otimiza_recursos"):
             try:
@@ -4098,7 +4107,7 @@ def comprimir(entrada, saida, nivel="recommended", log=print, _guard=None,
             except Exception as ex:
                 log(f"    remove_unreferenced: {ex}")
 
-        log("[5] salvando")
+        log(_etapa("[5] salvando"))
         _recomprime_flate_max(pdf, log)
         pdf.save(saida, object_stream_mode=pikepdf.ObjectStreamMode.generate,
                  recompress_flate=False)
@@ -4133,7 +4142,7 @@ def comprimir(entrada, saida, nivel="recommended", log=print, _guard=None,
             log(f"[!] ATENCAO: render divergiu ({pior:.2%}) mesmo sem etapas arriscadas")
         if pior is not None:
             log(f"[7] verificacao de render: pior pagina {pior:.3%}")
-    log(f"[6] {tam_antes:,} -> {tam_depois:,} bytes (-{razao:.1f}%)")
+    log(_etapa(f"[6] {tam_antes:,} -> {tam_depois:,} bytes (-{razao:.1f}%)"))
     return {"antes": tam_antes, "depois": tam_depois, "razao": razao,
             "nivel": nivel}
 
