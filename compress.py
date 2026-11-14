@@ -1995,6 +1995,144 @@ def _codigos_por_fonte(pdf):
     return por_obj
 
 
+def _assinatura_fonte(fo):
+    """Identidade da fonte: mesmo BaseFont + mesmo programa + mesmas larguras
+    => os objetos sao intercambiaveis."""
+    bf = str(fo.get("/BaseFont", ""))
+    sub = str(fo.get("/Subtype", ""))
+    enc = str(fo.get("/Encoding", ""))
+    larg = ""
+    try:
+        if "/Widths" in fo:
+            larg = repr([int(x) for x in list(fo["/Widths"])[:8]]) + "/%d" % len(fo["/Widths"])
+        elif "/W" in fo:
+            larg = repr(fo["/W"])[:80]
+    except Exception:
+        pass
+    prog = b""
+    try:
+        fd = fo.get("/FontDescriptor")
+        if fd is not None:
+            for k in ("/FontFile", "/FontFile2", "/FontFile3"):
+                if k in fd:
+                    bruto = fd[k].read_raw_bytes()
+                    prog = ("%s:%d:%d" % (k, len(bruto), zlib.crc32(bruto))).encode()
+                    break
+    except Exception:
+        pass
+    return (bf, sub, enc, larg, prog)
+
+
+def _consolida_fontes(pdf, log):
+    """Consolida fontes identicas num unico objeto.
+
+    O motor 3-Heights reusa o mesmo objeto quando o mesmo programa de fonte foi
+    re-embutido pagina a pagina; sem isso o arquivo carrega centenas de copias.
+    Medido em processo.pdf: 1.215 fontes, 937 duplicatas em 49 grupos, contra
+    348 objetos na saida do iLovePDF.
+    """
+    vistos = {}
+    mapa = {}
+    for obj in pdf.objects:
+        try:
+            if not isinstance(obj, pikepdf.Dictionary):
+                continue
+            if str(obj.get("/Type", "")) != "/Font":
+                continue
+            og = obj.objgen
+            if og is None:
+                continue
+            chave = _assinatura_fonte(obj)
+        except Exception:
+            continue
+        if chave in vistos:
+            mapa[og] = vistos[chave]
+        else:
+            vistos[chave] = og
+    if not mapa:
+        return 0
+    trocas = 0
+    dicts = 0
+    entradas = 0
+
+    def _remapea(fontes):
+        nonlocal trocas, entradas
+        dicts_local = 1
+        for nome in list(fontes.keys()):
+            entradas += 1
+            try:
+                og = fontes[nome].objgen
+            except Exception:
+                continue
+            canonico = mapa.get(og)
+            if canonico is not None:
+                try:
+                    fontes[nome] = pdf.get_object(canonico)
+                    trocas += 1
+                except Exception:
+                    pass
+        return dicts_local
+
+    vistos_res = set()
+    manter = []
+    pilha = []
+    for pagina in pdf.pages:
+        try:
+            pilha.append(pagina.Resources)
+        except Exception:
+            pass
+    while pilha:
+        res = pilha.pop()
+        if res is None:
+            continue
+        try:
+            og = res.objgen
+        except Exception:
+            og = None
+        # objgen de objeto direto e' (0, 0): NAO serve como identidade
+        if og and og[0]:
+            marca = og
+        else:
+            marca = ("direto", id(res))
+        if marca in vistos_res:
+            continue
+        vistos_res.add(marca)
+        manter.append(res)          # evita reuso de id() durante a varredura
+        # hasattr(res,"keys") e' True para QUALQUER Object do pikepdf (o metodo
+        # existe no tipo), entao a distincao dicionario/array tem de ser por
+        # tentativa: keys() levanta em array e a iteracao levanta em dicionario.
+        try:
+            chaves = [str(k) for k in res.keys()]
+            eh_dict = True
+        except Exception:
+            eh_dict = False
+        if eh_dict:
+            try:
+                fontes = res.get("/Font")
+            except Exception:
+                fontes = None
+            if fontes is not None and hasattr(fontes, "keys"):
+                try:
+                    dicts += _remapea(fontes)
+                except Exception:
+                    pass
+            for k in chaves:
+                try:
+                    pilha.append(res[k])
+                except Exception:
+                    pass
+        else:
+            try:
+                for item in res:
+                    pilha.append(item)
+            except Exception:
+                pass
+    log("    fontes consolidadas: %d duplicata(s) removida(s), %d objeto(s) mantido(s), "
+        "%d referencia(s) reapontada(s) [%d dict(s) /Font, %d entrada(s) examinada(s)]"
+        % (len(mapa), len(vistos), trocas, dicts, entradas))
+    return trocas
+
+
 def _subset_fontes(pdf, log):
     """Re-subseta fontes embutidas p/ glifos usados (SubsetFonts=1 nos 3 niveis).
 
@@ -2812,6 +2950,9 @@ def comprimir(entrada, saida, nivel="recommended", log=print, _guard=None,
             _subset_fontes_cid(pdf, log)
             if not _sem_risco and _TENTA_CFF:
                 _subset_fontes_cff(pdf, log)
+        # RemoveRedundantObjects do motor: consolida fontes identicas (o motor
+        # nao carrega o mesmo programa embutido centenas de vezes)
+        _consolida_fontes(pdf, log)
         _carimba(pdf, log, xmp_original)
         if spec.get("otimiza_recursos"):
             try:
