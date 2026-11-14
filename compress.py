@@ -2063,6 +2063,55 @@ def _consolida_imagens(pdf, log):
             pilha.append(pagina.Resources)
         except Exception:
             pass
+    # imagens tambem vivem nas aparencias de anotacao (/AP) e em Type3 charprocs
+    try:
+        for pagina in pdf.pages:
+            try:
+                anots = pagina.obj.get("/Annots")
+            except Exception:
+                continue
+            if anots is None:
+                continue
+            for anot in anots:
+                try:
+                    ap = anot.get("/AP")
+                    if ap is None:
+                        continue
+                    for chave in list(ap.keys()):
+                        fluxo = ap[chave]
+                        if isinstance(fluxo, pikepdf.Stream):
+                            pilha.append(fluxo.get("/Resources"))
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    try:
+        for pagina in pdf.pages:
+            try:
+                fontes = pagina.Resources.get("/Font")
+            except Exception:
+                continue
+            if fontes is None:
+                continue
+            try:
+                nomes_f = list(fontes.keys())
+            except Exception:
+                continue
+            for nf in nomes_f:
+                try:
+                    fo = fontes[nf]
+                    if str(fo.get("/Subtype", "")) != "/Type3":
+                        continue
+                    procs = fo.get("/CharProcs")
+                    if procs is None:
+                        continue
+                    pilha.append(fo.get("/Resources"))
+                    for pc in list(procs.keys()):
+                        pilha.append(procs[pc].get("/Resources"))
+                except Exception:
+                    pass
+    except Exception:
+        pass
     vistos_res = set()
     manter = []
     while pilha:
