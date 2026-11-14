@@ -53,6 +53,18 @@ Corpus de estresse próprio (8 PDFs sintéticos × 3 níveis): **24/24 sem falha
 nunca maior, render ≤ 1,13%. Cobre página rotacionada, imagem indexada,
 transparência RGBA, formulário + link, 25 páginas, imagem 2600×3400 e misto.
 
+**Documento de estresse** (`lab/processo.pdf`, 34.070.740 B, 376 páginas,
+676 imagens, 1.219 fontes, 214 assinaturas digitais):
+
+| nível | CompressPDF | iLovePDF | Δ | texto extraído |
+|---|---|---|---|---|
+| Recommended | 12.251.998 B | 12.227.010 B | +0,20% | idêntico (0/376) |
+| Extreme | 9.465.733 B | 9.275.878 B | +2,05% | 3/376 (acento/espaço) |
+| Low | **15.924.556 B** | 16.565.289 B | **−3,87%** | idêntico (0/376) |
+
+Render contra a referência de cada nível: pior caso **0,114%** (pg338) — única
+divergência visual que resta: máscara 1-bit que o motor reamostra e nós não.
+
 ## 3. Comportamentos replicados
 
 1. JPEG embrulhado em Flate (`[/FlateDecode /DCTDecode]`, `DecodeParms=[null {Quality}]`),
@@ -81,6 +93,9 @@ transparência RGBA, formulário + link, 25 páginas, imagem 2600×3400 e misto.
 | 3 | 1 imagem em 243 com JPEG 7% maior | diferença de encoder, não de algoritmo | tuning de encoder |
 | 4 | `ClipImages` só retangular | paths curvos exigiriam rasterizar máscara | implementação |
 | 5 | bit 10 do `Strip(1143)` | semântica ambígua no manual; replicamos o **observado** em 8 amostras | precisa de saída nova do app |
+| 6 | programas de fonte 177×92 (extreme) | o motor compartilha um programa por fonte‑fonte; agrupar por BaseFont com união de glifos foi medido e **piora ~160 KB** | diagnóstico antes de qualquer merge |
+| 7 | máscara 1‑bit não reamostrada | o motor reduz junto com a imagem‑mãe (58 máscaras: 24 KB dele × 108 KB nossos) | baixo |
+| 8 | content streams 21,0 MB × 16,6 MB (descomprimido) | serializador do motor é mais econômico | médio |
 
 Impacto prático de 1–5 no conjunto medido: **nenhum** (somos menores e mais
 fiéis em todos os 21 casos). Em documentos com muitos scans P&B, o item 1 pode
