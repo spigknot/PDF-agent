@@ -2109,6 +2109,15 @@ def _consolida_imagens(pdf, log):
                             trocas += 1
                         except Exception:
                             pass
+                # forms aninhados: o Form XObject tem /Resources proprio
+                for nome in nomes:
+                    try:
+                        filho = v[nome]
+                        if (isinstance(filho, pikepdf.Stream)
+                                and str(filho.get("/Subtype", "")) == "/Form"):
+                            pilha.append(filho.get("/Resources"))
+                    except Exception:
+                        pass
                 continue
             pilha.append(v)
     log("    imagens consolidadas: %d duplicata(s) removida(s), %d objeto(s) mantido(s), "
