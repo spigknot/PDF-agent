@@ -481,3 +481,32 @@ Causas-raiz desta rodada:
   pela uniao de glifos PIORA ~160 KB (medido nos 3 niveis). O motor nao faz
   uniao; cada copia mantem o seu subset. O caminho fica atras de
   `COMPRESSPDF_MERGE` e so funde programas byte a byte identicos.
+
+### Rodada 4 (14/11, madrugada) — Fases 4-6 do plano
+
+| nivel | nosso | iLovePDF | Δ | texto | render |
+|---|---|---|---|---|---|
+| recommended | 12.238.096 B | 12.227.010 B | +0,09% | 0/376 | 0,1134% |
+| extreme | 9.451.806 B | 9.275.878 B | +1,90% | 3/376 | 0,1134% |
+| low | **15.864.215 B** | 16.565.289 B | **−4,23%** | 0/376 | 0,1134% |
+
+- **Content streams**: cortes medidos por histograma de operador. O motor tem
+  `Tf` 6.451 × 14.114 nossos, `M` 35 × 3.389, `j` 1.923 × 3.978, `c`→`v`/`y`
+  29.944 conversões. Implementado no `_normaliza_conteudo`: rastreio de estado
+  (com pilha para `q`/`Q` e invalidação em `gs`) e conversão geométrica
+  `c`→`v` (ponta inicial == ponto corrente) / `c`→`y` (dois controles iguais ao
+  destino). Ganho: 152 KB descomprimidos na normalização; texto segue 0/376.
+- **Política de subset**: fonte SIMPLES agora renumera os glifos (o motor tem
+  Calibri com **4** glifos onde nós tínhamos 3.874); CID continua com
+  `retain_gids` porque o `/CIDToGIDMap` depende disso. Efeito medido: low
+  −58 KB, recommended igual, extreme +7 KB (ruído de execução).
+- **Máscara 1-bit**: a premissa estava errada — as 58 imagens 1-bit de
+  processo.pdf **não são `/SMask`**; o iLovePDF as codifica em **JBIG2**
+  (31 delas, 24 KB) e nós em CCITT G4 (111 KB). `_recomprime_mascaras` foi
+  implementada e testada (segue valendo para documentos com `/SMask` 1-bit),
+  mas neste documento é no-op. **JBIG2 segue bloqueado**: `jbig2enc` não está
+  instalado na máquina.
+- **Fontes (diagnóstico)**: 48-61 tipos de letra deles contra 66 nossos; a
+  diferença não é compartilhamento e sim **renumeração** (subsets menores por
+  programa). Agrupar por BaseFont com união de glifos continua **rejeitado**
+  (piora ~160 KB).

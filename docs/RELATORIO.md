@@ -58,9 +58,9 @@ transparência RGBA, formulário + link, 25 páginas, imagem 2600×3400 e misto.
 
 | nível | CompressPDF | iLovePDF | Δ | texto extraído |
 |---|---|---|---|---|
-| Recommended | 12.251.998 B | 12.227.010 B | +0,20% | idêntico (0/376) |
-| Extreme | 9.465.733 B | 9.275.878 B | +2,05% | 3/376 (acento/espaço) |
-| Low | **15.924.556 B** | 16.565.289 B | **−3,87%** | idêntico (0/376) |
+| Recommended | 12.238.096 B | 12.227.010 B | +0,09% | idêntico (0/376) |
+| Extreme | 9.451.806 B | 9.275.878 B | +1,90% | 3/376 (acento/espaço) |
+| Low | **15.864.215 B** | 16.565.289 B | **−4,23%** | idêntico (0/376) |
 
 Render contra a referência de cada nível: pior caso **0,114%** (pg338) — única
 divergência visual que resta: máscara 1-bit que o motor reamostra e nós não.
