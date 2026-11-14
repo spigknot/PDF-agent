@@ -2884,6 +2884,15 @@ def _subset_programa(tarefa):
         return None
 
 
+def _subset_lote(tarefas):
+    """Worker em lote: varias fontes por processo (amortiza o custo do pickle).
+
+    A tentativa anterior usava 1 tarefa por grupo (164 tarefas) e nao ganhava
+    nada; agrupando, a serializacao deixa de dominar.
+    """
+    return [_subset_programa(t) for t in tarefas]
+
+
 def _merge_subset_fontes(pdf, log):
     """Subseta UMA vez por fonte-fonte e compartilha o programa (MergeEmbeddedFonts).
 
@@ -3056,21 +3065,30 @@ def _merge_subset_fontes(pdf, log):
         return 0
 
     # --- fase 2: subset ---
-    # Medido em processo.pdf (376 p, 164 grupos): ProcessPool NAO acelera
-    # (151,9 s contra ~150 s em serie) — o custo de serializar os programas
-    # para os workers come o ganho. Fica em serie; o codigo do worker existe
-    # para o dia em que o subset for mais caro.
-    usar_pool = False
+    # Com 1 tarefa por grupo (164) o pickle dominava e nao havia ganho. Agora
+    # vai em LOTES: poucas tarefas grandes, cada uma subsetando varias fontes.
+    # `sys.frozen` (PyInstaller) exige freeze_support() no entrypoint — por
+    # isso o pool so' roda fora do executavel.
+    import sys as _sys
+    lote = int(os.environ.get("PDFAGENT_LOTE_FONTE", "8"))
+    usar_pool = (not getattr(_sys, "frozen", False)
+                 and len(plano) > lote and (os.cpu_count() or 1) > 1)
     resultados = None
     if usar_pool:
         try:
             from concurrent.futures import ProcessPoolExecutor
+            tarefas = [p[3] for p in plano]
+            lotes = [tarefas[i:i + lote] for i in range(0, len(tarefas), lote)]
             with ProcessPoolExecutor(
-                    max_workers=min(len(plano), os.cpu_count() or 2)) as pool:
-                resultados = list(pool.map(_subset_programa,
-                                           [p[3] for p in plano]))
+                    max_workers=min(len(lotes), os.cpu_count() or 2)) as pool:
+                blocos = list(pool.map(_subset_lote, lotes))
+            resultados = [r for bloco in blocos for r in bloco]
+            if len(resultados) != len(plano):
+                log("    subset em lote devolveu %d/%d; refazendo em serie"
+                    % (len(resultados), len(plano)))
+                resultados = None
         except Exception as ex:
-            log("    subset paralelo indisponivel (%s); em serie" % ex)
+            log("    subset em lote indisponivel (%s); em serie" % ex)
             resultados = None
     if resultados is None:
         resultados = [_subset_programa(p[3]) for p in plano]

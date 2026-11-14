@@ -540,3 +540,44 @@ principal. Fica como próximo passo, fora deste plano.
 **Variância de execução**: o mesmo código produz 12.096.302–12.103.750 B
 (~7 KB) entre rodadas; o gate usa tolerância (1.000/1.015/0,990) em vez de
 exigir byte exato.
+
+### Rodada 5 — velocidade: usar os núcleos (o que o motor faz)
+
+Evidência no binário (`PdfOptimizeAPI.dll`): importa **`libomp140.x86_64.dll`**
+(`__kmpc_push_num_threads`, `omp_get_thread_num`) e usa `CreateThread` /
+`_beginthreadex` — o motor roda com OpenMP nos 36 núcleos. Nós rodávamos em um.
+
+**Perfil instrumentado** (recommended, 376 pág.):
+
+| bloco | antes | depois |
+|---|---|---|
+| `[3]` imagens | 82,6 s | **70,0 s** |
+| — decode (`pikepdf.PdfImage`) | 1,5 s | 1,5 s |
+| — encoders (JPEG/Flate/G4) | 35,3 s | 35,6 s (agora em pool) |
+| — resize/convert/análise de cor | ~45 s | ~33 s |
+| subset de fontes | 52,5 s | **47,1 s** (em lotes) |
+| **total** | **146,5 s** | **128,9 s (−12%)** |
+
+O peso **não** está no decoder (1,5 s) e sim no trabalho de pixel e nos
+encoders — todos PIL/numpy/zlib, que **liberam a GIL** e portanto podem ir para
+threads.
+
+O que foi feito:
+
+- `_em_paralelo()` + pool de threads (`PDFAGENT_THREADS`, default
+  `min(8, cpus)`): roda callables PUROS em paralelo. `pikepdf` continua
+  exclusivamente na thread principal — o `Pdf` não é thread-safe.
+- Candidatos de imagem e as duas variantes de kernel passam pelo pool.
+- Subset de fontes em **lotes** (`PDFAGENT_LOTE_FONTE`, default 8): a tentativa
+  anterior com 1 tarefa por grupo (164) perdia para o custo de serializar;
+  agrupada, ganha 5,4 s.
+- `opts`/`tt.recalcTimestamp = False`: a saída ficou **determinística** (antes o
+  fontTools gravava `head.modified` = agora em 85 programas, ±1-2 B por rodada).
+- `scripts/compara_saidas.py`: prova que a otimização não mudou a saída
+  (0 objetos estruturais diferentes; só o XMP e o docinfo com as datas novas).
+
+**O que falta para chegar aos ~60 s**: o ganho contido é limitado porque cada
+imagem tem 1-2 candidatos. Para usar os 36 núcleos é preciso o **pipeline por
+imagem**: decodificar na thread principal (1,5 s total), mandar
+resize/convert/encoders para o pool em janelas e aplicar em série. Estimativa:
+70 s → ~15 s, total ~75 s.
