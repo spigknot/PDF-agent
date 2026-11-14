@@ -2184,6 +2184,34 @@ def _consolida_fontes(pdf, log):
             pilha.append(pagina.Resources)
         except Exception:
             pass
+    # fontes tambem vivem no /DR do AcroForm e nas aparencias de anotacao
+    try:
+        acro = pdf.Root.get("/AcroForm")
+        if acro is not None:
+            pilha.append(acro.get("/DR"))
+    except Exception:
+        pass
+    try:
+        for pagina in pdf.pages:
+            try:
+                anots = pagina.obj.get("/Annots")
+            except Exception:
+                continue
+            if anots is None:
+                continue
+            for anot in anots:
+                try:
+                    ap = anot.get("/AP")
+                    if ap is None:
+                        continue
+                    for chave in list(ap.keys()):
+                        fluxo = ap[chave]
+                        if isinstance(fluxo, pikepdf.Stream):
+                            pilha.append(fluxo.get("/Resources"))
+                except Exception:
+                    pass
+    except Exception:
+        pass
     while pilha:
         res = pilha.pop()
         if res is None:
