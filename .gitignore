@@ -17,3 +17,4 @@ build/
 
 # temporario criado pelo teste do launcher (scripts/verificar.py)
 _verifica_launcher.bat
+.hermes/

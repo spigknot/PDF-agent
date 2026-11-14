@@ -122,9 +122,14 @@ def teste_paridade_lab():
     """Tamanho + texto + render no documento de estresse (lab/processo.pdf)."""
     rc, saida = roda([PY, os.path.join(RAIZ, "tests", "test_paridade_lab.py")],
                      timeout=3600)
-    ultima = saida.strip().splitlines()[-1] if saida.strip() else ""
-    ok = rc == 0 and "0/" in ultima and "com problema" in ultima
-    return item("paridade no documento de estresse", ok, ultima[:120])
+    # a saida mistura stdout e stderr (fontTools avisa bastante): procurar a
+    # linha de veredito em vez de confiar na ultima.
+    m = re.search(r"(\d+)/(\d+) combinacoes do documento de estresse com problema",
+                  saida)
+    ok = rc == 0 and m is not None and m.group(1) == "0"
+    detalhe = (m.group(0) if m
+               else (saida.strip().splitlines()[-1][:120] if saida.strip() else ""))
+    return item("paridade no documento de estresse", ok, detalhe)
 
 
 def main():

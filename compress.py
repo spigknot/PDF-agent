@@ -323,14 +323,19 @@ def _usos_por_fonte(pdf):
     return saida
 
 
-def _politica_subset(opts):
+def _politica_subset(opts, retain=None):
     """Politica do subset de fontes.
 
     COMPRESSPDF_SUBSET=compacto (padrao): renumerа glifos e descarta hinting —
         menor arquivo, mesma renderizacao medida (MuPDF).
     COMPRESSPDF_SUBSET=motor: replica o conjunto de tabelas do 3-Heights
         (evidencia no x.pdf): mantem hinting (fpgm/prep/cvt), mantem os GIDs
-        originais e NAO carrega GPOS/GSUB. COMPRESSPDF_SUBSET=compacto|motor.
+        originais e NAO carrega GPOS/GSUB.
+
+    `retain` sobrepoe o `retain_gids` do modo. Medido nas referencias reais de
+    processo.pdf: fonte SIMPLES com 4 glifos no iLovePDF contra 3.874 nossos —
+    ele renumera; CID mantem 221 nos dois. Por isso `_merge_subset_fontes`
+    passa retain=False para grupos sem CID.
     """
     modo = os.environ.get("COMPRESSPDF_SUBSET", "motor").lower()
     if modo.startswith("mot"):
@@ -354,6 +359,8 @@ def _politica_subset(opts):
         opts.hinting = True
     else:
         opts.hinting = os.environ.get("COMPRESSPDF_HINT", "0") == "1"
+    if retain is not None:
+        opts.retain_gids = bool(retain)
 
 
 def _normaliza_nome_programa(tt, basefont):
@@ -1426,6 +1433,73 @@ def _recomprime_imagem(pdf, obj, spec, usos, log):
         return False, f"mantida ({rotulo} maior)", dpi_final
     melhor_fn(obj)
     return True, rotulo, dpi_final
+
+
+def _recomprime_mascaras(pdf, spec, usos, log):
+    """Reamostra o /SMask 1-bit para o tamanho da imagem-mae e recodifica em G4.
+
+    O motor trata a mascara como parte da imagem: se a mae cai para 928 px de
+    largura, a mascara tambem. Medido em processo.pdf (extreme): 58 mascaras
+    somando 24 KB do iLovePDF contra 108 KB nossos — cada uma ~4x maior porque
+    a mascara nao e' desenhada por `Do`, nunca aparece em `_tamanhos_na_pagina`
+    e ficava intocada.
+
+    Nao mexe em /ImageMask (stencil) nem em mascara com /DecodeParms (preditor).
+    """
+    n = 0
+    vistos = set()
+    for obj in pdf.objects:
+        try:
+            if not isinstance(obj, pikepdf.Stream):
+                continue
+            if str(obj.get("/Subtype", "")) != "/Image":
+                continue
+            m = obj.get("/SMask")
+            if m is None or not isinstance(m, pikepdf.Stream):
+                continue
+            if m.objgen in vistos:
+                continue
+            vistos.add(m.objgen)
+            if int(m.get("/BitsPerComponent", 8)) != 1:
+                continue
+            if int(m.get("/ImageMask", 0)) == 1:
+                continue
+            if m.get("/DecodeParms") is not None:
+                continue
+        except Exception:
+            continue
+        try:
+            alvo_w = int(obj["/Width"])
+            alvo_h = int(obj["/Height"])
+            if alvo_w < 8 or alvo_h < 8:
+                continue
+            img = _pil_da_imagem(m).convert("L").convert("1")
+            if img.size == (alvo_w, alvo_h):
+                continue
+            novo_img = img.resize((alvo_w, alvo_h), Image.BOX)
+            dados, gw, gh = _g4_bytes(novo_img)
+            if len(dados) >= len(m.read_raw_bytes()):
+                continue
+            m.write(dados)
+            m[Name("/Filter")] = Name("/CCITTFaxDecode")
+            m[Name("/DecodeParms")] = pikepdf.Dictionary(
+                K=-1, Columns=gw, Rows=gh, BlackIs1=True)
+            m[Name("/Width")] = gw
+            m[Name("/Height")] = gh
+            m[Name("/ColorSpace")] = Name("/DeviceGray")
+            m[Name("/BitsPerComponent")] = 1
+            for k in ("/Decode", "/Intent"):
+                try:
+                    del m[k]
+                except Exception:
+                    pass
+            n += 1
+        except Exception as ex:
+            log("    mascara %s: %s" % (obj.objgen, ex))
+            continue
+    if n:
+        log("    mascaras 1-bit reamostradas: %d" % n)
+    return n
 
 
 def _remove_assinaturas(pdf, log):
@@ -2921,9 +2995,13 @@ def _merge_subset_fontes(pdf, log):
             if falhou or not nomes_uniao:
                 continue
             total_antes = sum(len(m["raw"]) for m in membros_g)
+            # CID mantem os GIDs (o /CIDToGIDMap depende disso); fonte simples
+            # renumera, como o motor (medido: Calibri 4 glifos deles x 3.874
+            # nossos com retain_gids).
+            tem_cid = any(m["tipo"] == "cid" for m in membros_g)
             opts = subset.Options()
             opts.layout_features = ["*"]
-            _politica_subset(opts)
+            _politica_subset(opts, retain=True if tem_cid else False)
             ss = subset.Subsetter(opts)
             ss.populate(glyphs=sorted(nomes_uniao))
             ss.subset(tt)
@@ -3583,23 +3661,93 @@ def _normaliza_conteudo(pdf, log):
     def normaliza(instrucoes):
         saida = []
         identidade = True
-        # estado de texto: re-setar o MESMO valor e' no-op e sai do stream.
-        # TL NAO entra: `TD tx ty` tambem muda o leading (TL = -ty), entao o
-        # valor rastreado ficaria velho e o `TL` seguinte seria descartado por
-        # engano (medido: 3 paginas com texto extraido diferente).
-        estado = {"Tc": 0.0, "Tw": 0.0, "Tz": 100.0, "Ts": 0.0,
-                  "Tr": 0.0}
+        # Estado que o operador so' re-escreve: re-setar o MESMO valor e' no-op
+        # e sai do stream (o motor faz isso: medido em processo.pdf, `Tf` 6.451
+        # deles contra 14.114 nossos, `M` 35 x 3.389, `j` 1.923 x 3.978).
+        # `q` empilha uma copia e `Q` restaura — senao o corte fica errado.
+        PADRAO = {"Tc": 0.0, "Tw": 0.0, "Tz": 100.0, "Ts": 0.0, "Tr": 0.0,
+                  "w": 1.0, "J": 0.0, "j": 0.0, "M": 10.0, "Tf": None,
+                  "d": None}
+        estado = dict(PADRAO)
+        pilha_estado = []
+        cur = None          # ponto corrente do path (x, y) para c -> v/y
+        ini = None          # inicio do subpath (para `h`)
         for operandos, operador in instrucoes:
             op = str(operador)
-            if op in estado and len(operandos) == 1:
+            if op == "q":
+                pilha_estado.append(dict(estado))
+            elif op == "Q":
+                if pilha_estado:
+                    estado = pilha_estado.pop()
+            elif op == "gs":
+                # ExtGState pode mexer em qualquer coisa: invalidar o rastreio
+                for k in estado:
+                    estado[k] = None
+
+            # --- cortes de estado redundante ---
+            if op in estado:
+                chave = None
                 try:
-                    v = float(operandos[0])
+                    if op in ("Tf",) and len(operandos) == 2:
+                        chave = (str(operandos[0]), float(operandos[1]))
+                    elif op == "d" and len(operandos) == 2:
+                        chave = (tuple(float(x) for x in operandos[0]),
+                                 float(operandos[1]))
+                    elif len(operandos) == 1:
+                        chave = float(operandos[0])
                 except Exception:
-                    v = None
-                if v is not None:
-                    if v == estado[op]:
+                    chave = None
+                if chave is not None:
+                    # None = desconhecido (comeco do stream ou apos `gs`):
+                    # registra e emite; so corta quando o valor REPETE.
+                    if estado[op] is not None and chave == estado[op]:
                         continue
-                    estado[op] = v
+                    estado[op] = chave
+
+            # --- c -> v / y quando os pontos coincidem ---
+            if op in ("m", "l") and len(operandos) == 2:
+                try:
+                    ini = cur = (float(operandos[0]), float(operandos[1]))
+                except Exception:
+                    cur = ini = None
+            elif op in ("v", "y") and len(operandos) == 4:
+                try:
+                    cur = (float(operandos[2]), float(operandos[3]))
+                except Exception:
+                    cur = None
+            elif op == "c" and len(operandos) == 6:
+                try:
+                    vals = [float(x) for x in operandos]
+                except Exception:
+                    vals = None
+                if vals is not None and cur is not None:
+                    x1, y1, x2, y2, x3, y3 = vals
+                    if (x1, y1) == cur:
+                        saida.append(pikepdf.ContentStreamInstruction(
+                            pikepdf.Array([operandos[2], operandos[3],
+                                           operandos[4], operandos[5]]),
+                            pikepdf.Operator("v")))
+                        cur = (x3, y3)
+                        continue
+                    if (x2, y2) == (x3, y3):
+                        saida.append(pikepdf.ContentStreamInstruction(
+                            pikepdf.Array([operandos[0], operandos[1],
+                                           operandos[4], operandos[5]]),
+                            pikepdf.Operator("y")))
+                        cur = (x3, y3)
+                        continue
+                if vals is not None:
+                    cur = (vals[4], vals[5])
+            elif op == "h":
+                cur = ini
+            elif op == "re" and len(operandos) == 4:
+                try:
+                    cur = ini = (float(operandos[0]), float(operandos[1]))
+                except Exception:
+                    cur = ini = None
+            elif op in ("f", "f*", "S", "s", "B", "B*", "n"):
+                cur = ini = None      # path terminou
+
             if op == "BT":
                 identidade = True
             elif op in ("Td", "TD", "T*", "'", '"'):
@@ -3853,6 +4001,10 @@ def comprimir(entrada, saida, nivel="recommended", log=print, _guard=None,
                 except Exception as ex:
                     log(f"    imagem ignorada: {ex}")
         log(f"[3] imagens: {trocadas}/{total} recomprimidas")
+        try:
+            _recomprime_mascaras(pdf, spec, usos, log)
+        except Exception as ex:
+            log("    mascaras: %s" % ex)
 
         log("[4] strip/otimizacoes de documento")
         _aplica_strip(pdf, spec["strip"], log)
