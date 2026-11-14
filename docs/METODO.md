@@ -423,3 +423,28 @@ do lado dele, compensados por 411 KB a menos em imagens).
 - **Máscaras 1-bit**: o motor as reamostra junto com a imagem; nós mantemos.
   Isso nos deixa *maiores* aí, e as imagens *menores* no total (−411 KB).
 - Sem `ConvertToCFF` e sem MRC (fora de escopo, como já documentado em 4b).
+
+### Os tres niveis contra as tres referencias (14/11)
+
+| nivel | nosso | iLovePDF | Δ |
+|---|---|---|---|
+| recommended | 12.244.996 B | 12.227.010 B | +17.986 (+0,15%) |
+| extreme | 9.450.995 B | 9.275.878 B | +175.117 (+1,89%) |
+| low | **15.910.221 B** | 16.565.289 B | **−655.068 (−3,95%)** |
+
+Render vs a referencia de cada nivel: pior caso 0,114% (pg338, mascar 1-bit).
+Texto: recommended 0/376; low 4/376 e extreme 7/376 (pg 148-151, 179, 209, 221)
+— **bug conhecido**: nessas paginas um Type3 aparece no `rawdict` do MuPDF com
+nome de fonte VAZIO e os codigos saem como ` ...` ("fls. 1" vira lixo).
+O dicionario do Type3 (Encoding/Differences/CharProcs) e' identico ao original
+e a' referencia; falta achar quem deixa a fonte irresolvivel no content stream.
+Nao afeta render (0,114% igual aos outros niveis).
+
+Achados desta rodada (14/11):
+
+- **Assinaturas saem nos TRES niveis** (medido: 0 `/Type /Sig` e 0 widget
+  `/FT /Sig` tambem no low). Antes o low mantinha 214 widgets + 214 /Sig e
+  ficava 1,59 MB maior; agora fica 655 KB menor.
+- **Fonte padrao sem `/Encoding`**: `_substitui_fontes_padrao` forcava
+  `/WinAnsiEncoding`; no ZapfDingbats (encoding embutida) isso trocava o glifo
+  e a extracao ("G" -> "l"). Agora, sem `/Encoding`, a chave e' omitida.

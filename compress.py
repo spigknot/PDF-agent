@@ -699,23 +699,26 @@ def _substitui_fontes_padrao(pdf, log):
                 if subtipo not in ("/Type1", "/TrueType", "/MMType1"):
                     continue
                 enc = fo.get("/Encoding")
-                enc_nome = "/WinAnsiEncoding"
+                # Sem /Encoding a fonte padrao usa a encoding EMBUTIDA (o caso
+                # do ZapfDingbats). Forcar /WinAnsiEncoding trocava o glifo e a
+                # extracao: "G" virava "l" em 10-13 paginas de processo.pdf.
+                enc_nome = None
                 if isinstance(enc, Name):
                     enc_nome = str(enc)
                 elif enc is not None:
                     try:
                         if "/Differences" in enc:
                             continue
-                        enc_nome = str(enc.get("/BaseEncoding", "/WinAnsiEncoding"))
+                        base = enc.get("/BaseEncoding")
+                        enc_nome = str(base) if base is not None else None
                     except Exception:
                         continue
                 # troca o dicionario inteiro (como o original)
-                novo = pikepdf.Dictionary(
-                    Type=Name("/Font"),
-                    Subtype=Name("/Type1"),
-                    Encoding=Name(enc_nome) if enc_nome.startswith("/") else Name("/WinAnsiEncoding"),
-                    BaseFont=Name(alvo),
-                )
+                campos = {"Type": Name("/Font"), "Subtype": Name("/Type1"),
+                          "BaseFont": Name(alvo)}
+                if enc_nome:
+                    campos["Encoding"] = Name(enc_nome)
+                novo = pikepdf.Dictionary(**campos)
                 desc = fo.get("/FontDescriptor")
                 if desc is not None:
                     streams = []
@@ -1501,11 +1504,13 @@ def _remove_assinaturas(pdf, log):
 
 
 def _aplica_strip(pdf, strip, log):
+    # O motor descarta campos de assinatura em TODOS os niveis: medido nas tres
+    # saidas de processo.pdf (recommended, extreme e low: 0 `/Type /Sig` e 0
+    # widget `/FT /Sig`, com os 13 links preservados). Nao depende do Strip —
+    # no low sobram 214 widgets + 214 /Sig (~1,4 MB) se pularmos.
+    _remove_assinaturas(pdf, log)
     if not strip:
         return
-    if "assinaturas" in strip:
-        # observado no iLovePDF: campos de assinatura saem (ver _remove_assinaturas)
-        _remove_assinaturas(pdf, log)
     if "metadata" in strip:
         # O motor NAO apaga docinfo em nenhum nivel: nas 21 saidas reais o
         # docinfo mantem Author/Creator/Title (so datas e Producer mudam).
