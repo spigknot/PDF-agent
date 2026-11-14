@@ -84,6 +84,187 @@ def test_fonte_sem_uso_nao_esvazia_o_dict():
     pdf.close()
 
 
+def _fonte_com_programa(pdf, base, prog):
+    fd = pdf.make_indirect(pikepdf.Dictionary({
+        "/Type": pikepdf.Name("/FontDescriptor"),
+        "/FontName": pikepdf.Name(base),
+        "/FontFile2": prog,
+    }))
+    return pdf.make_indirect(pikepdf.Dictionary({
+        "/Type": pikepdf.Name("/Font"),
+        "/Subtype": pikepdf.Name("/TrueType"),
+        "/BaseFont": pikepdf.Name(base),
+        "/FontDescriptor": fd,
+        "/Widths": pikepdf.Array([500]),
+    }))
+
+
+def test_fonte_citada_em_tf_conta_como_usada():
+    """Fonte selecionada por Tf entra no mapa mesmo sem nenhum Tj/TJ.
+
+    Bug real: /R72 da pg148 de processo.pdf sumia do /Resources e a pagina
+    ficava sem fonte (texto extraido virava \\x00\\x01...).
+    """
+    pdf = pikepdf.new()
+    fonte = pdf.make_indirect(pikepdf.Dictionary({
+        "/Type": pikepdf.Name("/Font"),
+        "/Subtype": pikepdf.Name("/Type1"),
+        "/BaseFont": pikepdf.Name("/Helvetica"),
+    }))
+    pagina = pdf.add_blank_page(page_size=(200, 200))
+    pagina.obj["/Resources"] = pikepdf.Dictionary({
+        "/Font": pikepdf.Dictionary({"/F1": fonte}),
+    })
+    pagina.obj["/Contents"] = pdf.make_stream(b"BT /F1 12 Tf ET")
+    usos = compress._codigos_por_fonte(pdf)
+    assert fonte.objgen in usos, "Tf sem glifo deve marcar a fonte como usada"
+    assert usos[fonte.objgen] == set(), "e sem codigos de glifo"
+    pdf.close()
+
+
+def test_remocao_de_fonte_usa_objgen_original():
+    """Fonte usada nao pode ser apagada porque sua copia canonica e' 'sem uso'.
+
+    Bug real: a consolidacao remapeia /F2 para a canonica e decidia a remocao
+    pelo objgen da canonica; se ela nao estivesse em `usados`, /F2 sumia.
+    A terceira fonte (diferente) existe para o /Font NAO ficar vazio — com o
+    dicionario vazio a guarda "nunca esvaziar" mascararia o bug.
+    """
+    pdf = pikepdf.new()
+    prog = pdf.make_stream(b"PROGRAMA")
+    sobra = _fonte_com_programa(pdf, "/AAA+Times", prog)   # criada primeiro
+    usada = _fonte_com_programa(pdf, "/AAA+Times", prog)   # mesma assinatura
+    outra = _fonte_com_programa(pdf, "/BBB+Arial", pdf.make_stream(b"OUTRO"))
+    pagina = pdf.add_blank_page(page_size=(200, 200))
+    pagina.obj["/Resources"] = pikepdf.Dictionary({
+        "/Font": pikepdf.Dictionary({"/F1": sobra, "/F2": usada, "/F3": outra}),
+    })
+    pagina.obj["/Contents"] = pdf.make_stream(b"BT /F2 12 Tf (A) Tj /F3 12 Tf (B) Tj ET")
+    compress._consolida_fontes(pdf, lambda m: None)
+    nomes = {str(k) for k in pagina.obj["/Resources"]["/Font"].keys()}
+    assert "/F2" in nomes, "a fonte usada nao pode ser removida"
+    assert "/F1" not in nomes, "a copia sem uso deve sair"
+    pdf.close()
+
+
+def test_substituicao_padrao_preserva_tounicode():
+    """Trocar Arial por Helvetica nao pode perder o CMap codigo->texto.
+
+    Sem isso "fls. 1" virava \\x01\\x02... (pg148 de processo.pdf).
+    """
+    pdf = pikepdf.new()
+    tou = pdf.make_stream(
+        b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n"
+        b"1 begincodespacerange <00> <ff> endcodespacerange\n"
+        b"1 beginbfchar <01> <0066> endbfchar\n"
+        b"endcmap end end")
+    fd = pdf.make_indirect(pikepdf.Dictionary({
+        "/Type": pikepdf.Name("/FontDescriptor"),
+        "/FontName": pikepdf.Name("/Arial"),
+        "/FontFile2": pdf.make_stream(b"PROGRAMA"),
+    }))
+    fonte = pdf.make_indirect(pikepdf.Dictionary({
+        "/Type": pikepdf.Name("/Font"),
+        "/Subtype": pikepdf.Name("/TrueType"),
+        "/BaseFont": pikepdf.Name("/Arial"),
+        "/FontDescriptor": fd,
+        "/Widths": pikepdf.Array([500]),
+        "/ToUnicode": tou,
+    }))
+    pagina = pdf.add_blank_page(page_size=(200, 200))
+    pagina.obj["/Resources"] = pikepdf.Dictionary({
+        "/Font": pikepdf.Dictionary({"/F1": fonte}),
+    })
+    pagina.obj["/Contents"] = pdf.make_stream(b"BT /F1 12 Tf (A) Tj ET")
+    compress._substitui_fontes_padrao(pdf, lambda m: None)
+    depois = pagina.obj["/Resources"]["/Font"]["/F1"]
+    assert str(depois.get("/BaseFont")) == "/Helvetica"
+    assert depois.get("/ToUnicode") is not None, "o CMap tem de sobreviver"
+    pdf.close()
+
+
+def test_assinatura_nao_trunca_encoding():
+    """Dois /Encoding diferentes NAO podem colidir na assinatura.
+
+    str() de um Object do pikepdf corta a saida; 3 Type3 distintos de
+    processo.pdf cairam na mesma assinatura e a extracao virou \\x00\\x01...
+    """
+    pdf = pikepdf.new()
+
+    def fonte(marca):
+        dif = [pikepdf.Name("/g%d" % i) for i in range(300)]
+        dif[200] = pikepdf.Name("/%s" % marca)      # diferenca no fim
+        enc = pikepdf.Dictionary({
+            "/Type": pikepdf.Name("/Encoding"),
+            "/Differences": pikepdf.Array([0] + dif),
+        })
+        return pdf.make_indirect(pikepdf.Dictionary({
+            "/Type": pikepdf.Name("/Font"),
+            "/Subtype": pikepdf.Name("/Type3"),
+            "/CharProcs": pikepdf.Dictionary({
+                "/g0": pdf.make_stream(b"0 0 d0"),
+            }),
+            "/Encoding": enc,
+            "/Widths": pikepdf.Array([500] * 300),
+            "/FirstChar": 0,
+        }))
+
+    a, b = fonte("marcaA"), fonte("marcaB")
+    assert compress._assinatura_fonte(a) != compress._assinatura_fonte(b)
+    pdf.close()
+
+
+def _pdf_com_imagem_e_mascara(lado_px=400, lado_pt=36):
+    """Imagem RGB 64x64 desenhada em 36x36 pt (128 dpi) com /SMask 1-bit."""
+    import io as _io
+    from PIL import Image
+    pdf = pikepdf.new()
+    buf = _io.BytesIO()
+    Image.new("RGB", (lado_px, lado_px), (10, 20, 30)).save(
+        buf, format="JPEG", quality=80)
+    mascara = pdf.make_stream(bytes(lado_px * lado_px))
+    mascara["/Type"] = pikepdf.Name("/XObject")
+    mascara["/Subtype"] = pikepdf.Name("/Image")
+    mascara["/Width"] = lado_px
+    mascara["/Height"] = lado_px
+    mascara["/BitsPerComponent"] = 1
+    mascara["/ColorSpace"] = pikepdf.Name("/DeviceGray")
+    foto = pdf.make_stream(buf.getvalue())
+    foto["/Type"] = pikepdf.Name("/XObject")
+    foto["/Subtype"] = pikepdf.Name("/Image")
+    foto["/Width"] = lado_px
+    foto["/Height"] = lado_px
+    foto["/BitsPerComponent"] = 8
+    foto["/ColorSpace"] = pikepdf.Name("/DeviceRGB")
+    foto["/Filter"] = pikepdf.Name("/DCTDecode")
+    foto["/SMask"] = mascara
+    pagina = pdf.add_blank_page(page_size=(200, 200))
+    pagina.obj["/Resources"] = pikepdf.Dictionary({
+        "/XObject": pikepdf.Dictionary({"/Im1": foto}),
+    })
+    pagina.obj["/Contents"] = pdf.make_stream(
+        b"q %d 0 0 %d 0 0 cm /Im1 Do Q" % (lado_pt, lado_pt))
+    return pdf, foto, mascara
+
+
+def test_mascara_acompanha_o_tamanho_da_imagem():
+    """Mascara 1-bit tem de ser reamostrada junto com a imagem-mae.
+
+    Medido em processo.pdf extreme: 58 mascaras somando 108 KB nossos contra
+    24 KB do iLovePDF — cada uma ~4x maior porque ficava na resolucao original.
+    """
+    pdf, foto, mascara = _pdf_com_imagem_e_mascara()
+    spec = dict(compress.LEVELS["extreme"])
+    usos = compress._tamanhos_na_pagina(pdf)
+    compress._recomprime_imagem(pdf, foto, spec, usos, lambda m: None)
+    compress._recomprime_mascaras(pdf, spec, usos, lambda m: None)
+    assert int(foto["/Height"]) < 400, "a imagem-mae devia ter sido reamostrada"
+    assert int(mascara["/Height"]) == int(foto["/Height"]), \
+        "a mascara tem de ter a mesma altura da imagem-mae"
+    assert int(mascara["/Width"]) == int(foto["/Width"])
+    pdf.close()
+
+
 def main():
     falhas = 0
     for nome in sorted(n for n in globals() if n.startswith("test_")):
