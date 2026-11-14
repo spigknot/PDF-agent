@@ -2036,15 +2036,18 @@ def _consolida_imagens(pdf, log):
         try:
             if not isinstance(obj, pikepdf.Stream):
                 continue
-            if str(obj.get("/Subtype", "")) != "/Image":
+            sub = str(obj.get("/Subtype", ""))
+            if sub not in ("/Image", "/Form"):
                 continue
             og = obj.objgen
             if not og or not og[0]:
                 continue
             bruto = obj.read_raw_bytes()
-            chave = (len(bruto), zlib.crc32(bruto), str(obj.get("/Filter", "")),
+            chave = (sub, len(bruto), zlib.crc32(bruto), str(obj.get("/Filter", "")),
                      int(obj.get("/Width", 0)), int(obj.get("/Height", 0)),
-                     str(obj.get("/ColorSpace", "")), int(obj.get("/BitsPerComponent", 0)))
+                     str(obj.get("/ColorSpace", "")), int(obj.get("/BitsPerComponent", 0)),
+                     str(obj.get("/BBox", "")), str(obj.get("/Matrix", "")),
+                     len(str(obj.get("/Resources", ""))))
         except Exception:
             continue
         if chave in vistos:
