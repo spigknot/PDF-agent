@@ -486,9 +486,9 @@ Causas-raiz desta rodada:
 
 | nivel | nosso | iLovePDF | Δ | texto | render |
 |---|---|---|---|---|---|
-| recommended | 12.238.096 B | 12.227.010 B | +0,09% | 0/376 | 0,1134% |
-| extreme | 9.451.806 B | 9.275.878 B | +1,90% | 3/376 | 0,1134% |
-| low | **15.864.215 B** | 16.565.289 B | **−4,23%** | 0/376 | 0,1134% |
+| recommended | 12.103.750 B | 12.227.010 B | −1,01% | 0/376 | 0,1134% |
+| extreme | 9.311.583 B | 9.275.878 B | +0,38% | 3/376 | 0,1134% |
+| low | **15.738.078 B** | 16.565.289 B | **−4,99%** | 0/376 | 0,1134% |
 
 - **Content streams**: cortes medidos por histograma de operador. O motor tem
   `Tf` 6.451 × 14.114 nossos, `M` 35 × 3.389, `j` 1.923 × 3.978, `c`→`v`/`y`
@@ -510,3 +510,12 @@ Causas-raiz desta rodada:
   diferença não é compartilhamento e sim **renumeração** (subsets menores por
   programa). Agrupar por BaseFont com união de glifos continua **rejeitado**
   (piora ~160 KB).
+
+- **Bug de consolidacao (achado na Fase 7)**: as tres funcoes de consolidacao
+  devolviam `0` quando nao havia duplicata; o chamador faz
+  `mapa_dup.update(0)` -> `TypeError` silencioso (capturado pelo try), entao a
+  fase inteira era PULADA. Corrigido para `{}`: −141 KB no recommended e
+  −34 KB no extreme.
+- **Paralelismo do subset REJEITADO**: `ProcessPool` com 164 grupos deu 151,9 s
+  contra ~150 s em serie (serializar os programas para os workers come o
+  ganho). O worker `_subset_programa` fica no codigo, o pool desligado.

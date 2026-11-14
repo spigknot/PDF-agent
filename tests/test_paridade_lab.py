@@ -23,8 +23,9 @@ REFS = {
     "extreme": os.path.join(LAB, "processo-compressed-extreme.pdf"),
     "low": os.path.join(LAB, "processo-compressed-low.pdf"),
 }
-# teto de tamanho relativo a referencia (medido em 14/11; apertar sozinho)
-LIMITE = {"recommended": 1.010, "extreme": 1.030, "low": 1.000}
+# teto de tamanho relativo a referencia. Apertado em 14/11 com o ganho medido
+# (0,990 / 1,004 / 0,950): qualquer regressao acima disso reprova.
+LIMITE = {"recommended": 1.000, "extreme": 1.015, "low": 0.990}
 # paginas com texto divergente ACEITAS (bug conhecido, documentado em
 # docs/METODO.md §5: 3 paginas do extreme trocam um acento e espaco de fim de
 # linha). Qualquer pagina NOVA divergindo reprova.

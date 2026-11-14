@@ -2403,7 +2403,7 @@ def _consolida_imagens(pdf, log):
         else:
             vistos[chave] = og
     if not mapa:
-        return 0
+        return {}
     trocas = 0
     pilha = []
     for pagina in pdf.pages:
@@ -2614,7 +2614,7 @@ def _reaponta_tudo(pdf, mapa, log):
     inteiro, entao nenhuma copia sobrevive por falta de caminho.
     """
     if not mapa:
-        return 0
+        return {}
     trocas = 0
 
     def desce(cont, prof=0):
@@ -2700,7 +2700,7 @@ def _consolida_fontes(pdf, log):
         else:
             vistos[chave] = og
     if not mapa:
-        return 0
+        return {}
     trocas = 0
     dicts = 0
     entradas = 0
@@ -2839,6 +2839,31 @@ def _consolida_fontes(pdf, log):
     return mapa
 
 
+def _subset_programa(tarefa):
+    """Worker: subseta UM programa de fonte. Recebe e devolve apenas bytes/listas.
+
+    Precisa ser funcao de modulo (picklable) e nao toca em `pikepdf`: objetos do
+    pikepdf nao atravessam processo.
+    """
+    raw, nomes, base, tem_cid = tarefa
+    try:
+        from fontTools import subset
+        from fontTools.ttLib import TTFont
+        tt = TTFont(io.BytesIO(raw))
+        opts = subset.Options()
+        opts.layout_features = ["*"]
+        _politica_subset(opts, retain=tem_cid)
+        ss = subset.Subsetter(opts)
+        ss.populate(glyphs=nomes)
+        ss.subset(tt)
+        _normaliza_nome_programa(tt, base)
+        buf = io.BytesIO()
+        tt.save(buf)
+        return buf.getvalue(), tt.getGlyphOrder()
+    except Exception:
+        return None
+
+
 def _merge_subset_fontes(pdf, log):
     """Subseta UMA vez por fonte-fonte e compartilha o programa (MergeEmbeddedFonts).
 
@@ -2949,7 +2974,9 @@ def _merge_subset_fontes(pdf, log):
 
     tag = _tag_subset(pdf)
     processados = 0
-    programas_antes = len(grupos)
+
+    # --- fase 1: nomes por grupo (nao toca no PDF) ---
+    plano = []          # (membros_g, por_codigo, total_antes, tarefa)
     for _chave, membros_g in grupos.items():
         if not membros_g:
             continue
@@ -2999,19 +3026,44 @@ def _merge_subset_fontes(pdf, log):
             # renumera, como o motor (medido: Calibri 4 glifos deles x 3.874
             # nossos com retain_gids).
             tem_cid = any(m["tipo"] == "cid" for m in membros_g)
-            opts = subset.Options()
-            opts.layout_features = ["*"]
-            _politica_subset(opts, retain=True if tem_cid else False)
-            ss = subset.Subsetter(opts)
-            ss.populate(glyphs=sorted(nomes_uniao))
-            ss.subset(tt)
-            _normaliza_nome_programa(tt, canon["fo"].get("/BaseFont", ""))
-            buf = io.BytesIO()
-            tt.save(buf)
-            novo = buf.getvalue()
-            if len(novo) >= total_antes:
-                continue
-            nome2gid = {nm: i for i, nm in enumerate(tt.getGlyphOrder())}
+            tarefa = (canon["raw"], sorted(nomes_uniao),
+                      str(canon["fo"].get("/BaseFont", "")), tem_cid)
+            plano.append((membros_g, por_codigo, total_antes, tarefa))
+        except Exception as ex:
+            log("    merge fonte: %s" % ex)
+            continue
+    if not plano:
+        return 0
+
+    # --- fase 2: subset ---
+    # Medido em processo.pdf (376 p, 164 grupos): ProcessPool NAO acelera
+    # (151,9 s contra ~150 s em serie) — o custo de serializar os programas
+    # para os workers come o ganho. Fica em serie; o codigo do worker existe
+    # para o dia em que o subset for mais caro.
+    usar_pool = False
+    resultados = None
+    if usar_pool:
+        try:
+            from concurrent.futures import ProcessPoolExecutor
+            with ProcessPoolExecutor(
+                    max_workers=min(len(plano), os.cpu_count() or 2)) as pool:
+                resultados = list(pool.map(_subset_programa,
+                                           [p[3] for p in plano]))
+        except Exception as ex:
+            log("    subset paralelo indisponivel (%s); em serie" % ex)
+            resultados = None
+    if resultados is None:
+        resultados = [_subset_programa(p[3]) for p in plano]
+
+    # --- fase 3: aplicar no PDF (processo principal) ---
+    for (membros_g, por_codigo, total_antes, _t), res in zip(plano, resultados):
+        if not res:
+            continue
+        novo, ordem_nova = res
+        if len(novo) >= total_antes:
+            continue
+        nome2gid = {nm: i for i, nm in enumerate(ordem_nova)}
+        try:
             # stream canonico do programa compartilhado
             canonico = pdf.make_stream(b"")
             canonico.write(zlib.compress(novo, 9), filter=Name("/FlateDecode"),
@@ -3050,7 +3102,7 @@ def _merge_subset_fontes(pdf, log):
                 except Exception:
                     continue
         except Exception as ex:
-            log("    merge fonte %s: %s" % (_crc, ex))
+            log("    merge fonte: %s" % ex)
             continue
     if processados:
         log("    fontes: %d copia(s) -> %d programa(s), %d fonte(s) reapontada(s)"
