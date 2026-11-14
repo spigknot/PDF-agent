@@ -2054,10 +2054,15 @@ def _consolida_fontes(pdf, log):
     trocas = 0
     dicts = 0
     entradas = 0
+    removidos = 0
+    # fontes com glifos realmente usados (paginas + Form XObjects)
+    try:
+        usados = set(_codigos_por_fonte(pdf).keys())
+    except Exception:
+        usados = set()
 
     def _remapea(fontes):
-        nonlocal trocas, entradas
-        dicts_local = 1
+        nonlocal trocas, entradas, removidos
         for nome in list(fontes.keys()):
             entradas += 1
             try:
@@ -2069,9 +2074,17 @@ def _consolida_fontes(pdf, log):
                 try:
                     fontes[nome] = pdf.get_object(canonico)
                     trocas += 1
+                    og = canonico
                 except Exception:
                     pass
-        return dicts_local
+            # fonte sem nenhum glifo usado: sai do resource (o motor nao a grava)
+            if og and og[0] and og not in usados:
+                try:
+                    del fontes[nome]
+                    removidos += 1
+                except Exception:
+                    pass
+        return 1
 
     vistos_res = set()
     manter = []
@@ -2128,8 +2141,9 @@ def _consolida_fontes(pdf, log):
             except Exception:
                 pass
     log("    fontes consolidadas: %d duplicata(s) removida(s), %d objeto(s) mantido(s), "
-        "%d referencia(s) reapontada(s) [%d dict(s) /Font, %d entrada(s) examinada(s)]"
-        % (len(mapa), len(vistos), trocas, dicts, entradas))
+        "%d referencia(s) reapontada(s), %d fonte(s) sem uso removida(s) "
+        "[%d dict(s) /Font, %d entrada(s)]"
+        % (len(mapa), len(vistos), trocas, removidos, dicts, entradas))
     return trocas
 
 
