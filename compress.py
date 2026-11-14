@@ -553,6 +553,7 @@ def _subset_fontes_cid(pdf, log):
             mapa = None if identidade else c2g.read_bytes()
             raw = ff.read_bytes()
             tt = TTFont(io.BytesIO(raw))
+            tt.recalcTimestamp = False   # head.modified deterministico
             ordem = tt.getGlyphOrder()
             gids = set()
             for cid in codigos:
@@ -2850,6 +2851,7 @@ def _subset_programa(tarefa):
         from fontTools import subset
         from fontTools.ttLib import TTFont
         tt = TTFont(io.BytesIO(raw))
+        tt.recalcTimestamp = False   # head.modified deterministico
         opts = subset.Options()
         opts.layout_features = ["*"]
         _politica_subset(opts, retain=tem_cid)
@@ -3159,6 +3161,7 @@ def _subset_fontes(pdf, log):
         try:
             raw = desc[fkey].read_bytes()
             tt = TTFont(io.BytesIO(raw))
+            tt.recalcTimestamp = False   # head.modified deterministico
             nomes, diff_map, tab_base = _nomes_glifos_usados(fo, codes, tt)
             if not nomes:
                 continue
