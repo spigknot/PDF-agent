@@ -1103,11 +1103,15 @@ def _recomprime_imagem(pdf, obj, spec, usos, log):
     indexada = cs_nome == "/Indexed"
     bitonal = (bpc == 1 and not indexada)
 
+    import time as _t
+    _t_dec = _t.time()
     try:
         img = _pil_da_imagem(obj)
     except Exception as ex:
         log(f"    imagem {w}x{h}: decode falhou ({ex}); mantida")
         return False, "decode-falha", None
+    finally:
+        _TEMPO_IMG["decode"] += _t.time() - _t_dec
 
     # --- conversao de cor (Extreme: tudo vira RGB) ---
     if spec["conversao_cor"] == "rgb" and img.mode == "CMYK":
@@ -1219,7 +1223,10 @@ def _recomprime_imagem(pdf, obj, spec, usos, log):
                             if "flate" in permitidos:
                                 custos.append(len(_flate_bytes(im)))
                             return min(custos) if custos else len(_flate_bytes(im))
-                        if _custo_variante(alt) < _custo_variante(img):
+                        c_alt, c_base = _em_paralelo(
+                            [lambda: _custo_variante(alt),
+                             lambda: _custo_variante(img)])
+                        if c_alt < c_base:
                             img = alt
                 except Exception:
                     pass
@@ -1280,6 +1287,7 @@ def _recomprime_imagem(pdf, obj, spec, usos, log):
         orig_len = None
 
     mascara = spec["bitonal"] if bitonal else (spec["indexado"] if indexada else spec["continuo"])
+    _t_enc = _t.time()
     candidatos = []  # (nbytes, aplica_fn, rotulo)
 
     def tenta_jpeg():
@@ -1399,24 +1407,34 @@ def _recomprime_imagem(pdf, obj, spec, usos, log):
                     pass
         return len(dados), aplica, "jbig2"
 
+    # Os encoders rodam em paralelo: `tenta_*` so LEEM `img` e devolvem
+    # bytes + uma closure de aplicacao; nada toca no PDF aqui. No processo.pdf
+    # os encoders sao ~36 s dos 82 s da fase de imagem.
+    tarefas = []
     for tipo in mascara:
-        try:
-            if tipo == "jpeg" and not bitonal:
-                candidatos.append(tenta_jpeg())
-            elif tipo == "flate":
-                candidatos.append(tenta_flate())
-            elif tipo == "g4" and bitonal:
-                candidatos.append(tenta_g4())
-                try:
-                    jb = tenta_jbig2()
-                    if jb:
-                        candidatos.append(jb)
-                except Exception as ex:
-                    log(f"    jbig2 falhou: {ex}")
-            elif tipo == "source":
-                pass  # = manter bytes originais (candidato implicito)
-        except Exception as ex:
-            log(f"    candidato {tipo} falhou: {ex}")
+        if tipo == "jpeg" and not bitonal:
+            tarefas.append(("jpeg", tenta_jpeg))
+        elif tipo == "flate":
+            tarefas.append(("flate", tenta_flate))
+        elif tipo == "g4" and bitonal:
+            tarefas.append(("g4", tenta_g4))
+            tarefas.append(("jbig2", tenta_jbig2))
+        # "source" = manter bytes originais (candidato implicito)
+
+    def _seguro(nome, fn):
+        def _roda():
+            try:
+                return fn()
+            except Exception as ex:
+                log(f"    candidato {nome} falhou: {ex}")
+                return None
+        return _roda
+
+    for res in _em_paralelo([_seguro(nome, fn) for nome, fn in tarefas]):
+        if res is not None:
+            candidatos.append(res)
+
+    _TEMPO_IMG["encode"] += _t.time() - _t_enc
 
     # (o antigo "Flate de resgate" foi removido: ele disparava justamente nos
     #  perfis que NAO listam flate — extreme e low usam so JPEG — e produzia
@@ -4009,6 +4027,38 @@ def _pior_diferenca_render(entrada, saida, dpi=80):
 #: ligue com `--verificar` ou PDFAGENT_VERIFICAR=1.
 VERIFICAR = bool(os.environ.get("PDFAGENT_VERIFICAR"))
 
+#: Tempo gasto por bloco da fase de imagem (Fase 1 do plano de velocidade).
+_TEMPO_IMG = {"decode": 0.0, "encode": 0.0}
+
+_POOL = None
+
+
+def _largura_pool():
+    """Threads do pool de encoders (PDFAGENT_THREADS; 0/1 = serie)."""
+    try:
+        return max(1, int(os.environ.get("PDFAGENT_THREADS",
+                                         min(8, os.cpu_count() or 1))))
+    except Exception:
+        return 1
+
+
+def _em_paralelo(funcoes):
+    """Roda callables PUROS em threads e devolve os resultados na ordem.
+
+    So pode receber funcao que nao toque em `pikepdf` (o Pdf nao e' thread-safe):
+    os encoders de imagem (PIL/zlib, que liberam a GIL) se encaixam; a escrita
+    no objeto continua na thread principal.
+    """
+    global _POOL
+    n = _largura_pool()
+    if n <= 1 or len(funcoes) < 2:
+        return [f() for f in funcoes]
+    if _POOL is None:
+        from concurrent.futures import ThreadPoolExecutor
+        _POOL = ThreadPoolExecutor(max_workers=n)
+    futuros = [_POOL.submit(f) for f in funcoes]
+    return [f.result() for f in futuros]
+
 
 def comprimir(entrada, saida, nivel="recommended", log=print, _guard=None,
               _sem_risco=False):
@@ -4063,6 +4113,8 @@ def comprimir(entrada, saida, nivel="recommended", log=print, _guard=None,
                 except Exception as ex:
                     log(f"    imagem ignorada: {ex}")
         log(_etapa(f"[3] imagens: {trocadas}/{total} recomprimidas"))
+        log("    tempo imagem: decode %.1fs, encode %.1fs"
+            % (_TEMPO_IMG["decode"], _TEMPO_IMG["encode"]))
         try:
             _recomprime_mascaras(pdf, spec, usos, log)
         except Exception as ex:
