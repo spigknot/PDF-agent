@@ -118,6 +118,15 @@ def teste_consolidacao():
                 "" if ok else saida.strip().splitlines()[-1][:120])
 
 
+def teste_paridade_lab():
+    """Tamanho + texto + render no documento de estresse (lab/processo.pdf)."""
+    rc, saida = roda([PY, os.path.join(RAIZ, "tests", "test_paridade_lab.py")],
+                     timeout=3600)
+    ultima = saida.strip().splitlines()[-1] if saida.strip() else ""
+    ok = rc == 0 and "0/" in ultima and "com problema" in ultima
+    return item("paridade no documento de estresse", ok, ultima[:120])
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--lab", default=LAB_PADRAO)
@@ -127,7 +136,7 @@ def main():
 
     print("== verificacao do compressor ==  (%s)" % RAIZ)
     resultados = [teste_niveis(), teste_exit_code(), teste_cli(), teste_launcher(),
-                  teste_consolidacao()]
+                  teste_consolidacao(), teste_paridade_lab()]
     par_ok, _n_difs = teste_paridade(args.lab, args.max_difs)
     resultados.append(par_ok)
 
