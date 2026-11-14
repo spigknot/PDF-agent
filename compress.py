@@ -12,6 +12,7 @@ import argparse
 import io
 import math
 import os
+import re
 import struct
 import sys
 import zlib
@@ -1791,13 +1792,32 @@ def _bytes_conteudo(obj):
         return b""
 
 
+_TOKENS_CACHE = {}
+
+
+_TOK_NAME = re.compile(rb"/[^\s<>\[\]()/%]+")
+_TOK_WORD = re.compile(rb"[^\s<>\[\]()/%]+")
+_TOK_NUM = re.compile(rb"[+-]?(\d+\.?\d*|\.\d+)")
+
+
 def _tokens_conteudo(data):
     """Tokeniza content stream cru em (tipo, valor).
 
     Tipos: 'str' (bytes literais, escapes resolvidos), 'hex' (bytes),
     'name', 'num', 'op', 'arr', 'dict'. Byte-exato: nao decodifica texto.
+
+    Duas otimizacoes que nao mudam o resultado:
+      - regexes compilados com .match(data, i): o codigo antigo fazia
+        re.match(pat, data[i:]), copiando o resto do stream a cada token
+        (O(n^2) de memoria/tempo em content streams grandes);
+      - cache por conteudo: varias fases tokenizam o MESMO stream.
     """
-    import re
+    chave = (len(data), zlib.crc32(data))
+    cache = _TOKENS_CACHE.get(chave)
+    if cache is not None:
+        return cache
+    if len(_TOKENS_CACHE) > 4096:
+        _TOKENS_CACHE.clear()
     toks = []
     i, n = 0, len(data)
     while i < n:
@@ -1877,21 +1897,22 @@ def _tokens_conteudo(data):
             i += 1
             continue
         if c == b"/":
-            m = re.match(rb"/[^\s<>\[\]\(\)/%]+", data[i:])
+            m = _TOK_NAME.match(data, i)
             if m:
                 toks.append(("name", m.group()))
-                i += len(m.group())
+                i = m.end()
                 continue
-        m = re.match(rb"[^\s<>\[\]\(\)/%]+", data[i:])
+        m = _TOK_WORD.match(data, i)
         if m:
             g = m.group()
-            if re.fullmatch(rb"[+-]?(\d+\.?\d*|\.\d+)", g):
+            if _TOK_NUM.fullmatch(g):
                 toks.append(("num", g))
             else:
                 toks.append(("op", g))
-            i += len(g)
+            i = m.end()
             continue
         i += 1
+    _TOKENS_CACHE[chave] = toks
     return toks
 
 
@@ -2726,7 +2747,13 @@ def _pior_diferenca_render(entrada, saida, dpi=80):
     return pior
 
 
-def comprimir(entrada, saida, nivel="recommended", log=print, _guard=True,
+#: Verificacao de render (rede de seguranca NOSSA, o motor 3-Heights nao faz).
+#: Desligada por padrao para o algoritmo ficar identico ao do iLovePDF;
+#: ligue com `--verificar` ou PDFAGENT_VERIFICAR=1.
+VERIFICAR = bool(os.environ.get("PDFAGENT_VERIFICAR"))
+
+
+def comprimir(entrada, saida, nivel="recommended", log=print, _guard=None,
               _sem_risco=False):
     """Comprime um PDF no nível dado. Retorna dict com estatisticas."""
     if nivel not in LEVELS:
@@ -2814,6 +2841,8 @@ def comprimir(entrada, saida, nivel="recommended", log=print, _guard=True,
             log(f"[!] nao foi possivel reverter para o original: {ex}")
     # Rede de seguranca: se o render mudou demais (clip errado, fonte quebrada),
     # refaz sem ClipImages. Nunca entregar arquivo visualmente divergente.
+    if _guard is None:
+        _guard = VERIFICAR
     if _guard:
         pior = _pior_diferenca_render(entrada, saida, dpi=110)
         limite = 0.04 if nivel == "extreme" else 0.02
@@ -2926,7 +2955,13 @@ def main(argv=None):
                          "saida assume o nome original (usado no menu de contexto)")
     ap.add_argument("--avisar", action="store_true",
                     help="mostra uma caixa de dialogo com o resultado (menu de contexto)")
+    ap.add_argument("--verificar", action="store_true",
+                    help="liga a verificacao de render (rede de seguranca nossa; "
+                         "o motor do iLovePDF nao faz isso e custa minutos em PDF grande)")
     args = ap.parse_args(argv)
+    if args.verificar:
+        global VERIFICAR
+        VERIFICAR = True
 
     entradas = []
     if os.path.isdir(args.entrada):
