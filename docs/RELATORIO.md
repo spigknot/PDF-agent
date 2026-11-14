@@ -40,7 +40,7 @@ motor roda com os defaults.
 
 | métrica | CompressPDF | iLovePDF |
 |---|---|---|
-| tamanho total | **4.040.126 B** | 4.203.565 B (**−3,9%**) |
+| tamanho total | **3.998.962 B** | 4.203.565 B (**−4,87%**) |
 | menor em | **21 / 21** arquivos | 0 |
 | diferença média de render (pixels) | **0,058%** | 0,135% |
 | SSIM médio vs original | **0,9990** | 0,9984 |

@@ -84,7 +84,8 @@ LEVELS = {
         # unica leitura da mascara em FUN_1800b00e0 (pre-save), onde ele
         # alimenta diagnostico (codigos 0x1401/0x1702/0x1712), nao conteudo.
         # Por isso "invisiveis" saiu do perfil (era fidelidade inventada).
-        "strip": {"threads", "pieceinfo", "thumbs", "spider", "alternates"},
+        "strip": {"threads", "pieceinfo", "thumbs", "spider", "alternates",
+                  "assinaturas"},
         "achatar": False,
         "remove_fontes_padrao": False,    # herda Print=False
         "reduz_cor": True,                # herda Print=True
@@ -101,7 +102,7 @@ LEVELS = {
         "continuo": ["jpeg"],             # SetContinuousCompressions(2=JPEG)
         "indexado": ["flate", "source"],  # herda Print
         "strip": {"threads", "metadata", "pieceinfo", "structtree", "thumbs",
-                  "spider", "alternates"},             # SetStrip(127 = 0x7F)
+                  "spider", "alternates", "assinaturas"},             # SetStrip(127 = 0x7F)
         "achatar": False,
         "remove_fontes_padrao": True,     # SetRemoveStandardFonts(1)
         "reduz_cor": True,                # SetReduceColorComplexity(1)
@@ -337,14 +338,62 @@ def _politica_subset(opts):
         opts.hinting = True
         opts.layout_features = []
         # o motor nao emite GPOS/GSUB/GDEF no subset (evidencia: as 6 fontes
-        # do x_ilovepdf_* so tem glyf/fpgm/prep/cvt/hmtx/loca/name)
+        # do x_ilovepdf_* so tem glyf/fpgm/prep/cvt/hmtx/loca/name) e tambem
+        # descarta as tabelas de metrica por tamanho/hinting de tela.
         opts.drop_tables = list(getattr(opts, "drop_tables", [])) + [
-            "GPOS", "GSUB", "GDEF"]
+            "GPOS", "GSUB", "GDEF", "hdmx", "VDMX", "gasp", "kern", "LTSH",
+            "PCLT", "DSIG", "meta"]
+        # a tabela `name` do motor tem exatamente 7 registros: IDs 0-6,
+        # plataforma Windows, idioma 0x409 (medido em processo.pdf: 378 B
+        # contra 11.906 B nossos com todas as linguas).
+        opts.name_IDs = [0, 1, 2, 3, 4, 5, 6]
+        opts.name_languages = [0x409]
+        opts.name_legacy = False
     elif modo.startswith("ilove"):
         opts.retain_gids = True
         opts.hinting = True
     else:
         opts.hinting = os.environ.get("COMPRESSPDF_HINT", "0") == "1"
+
+
+def _normaliza_nome_programa(tt, basefont):
+    """Reescreve os nomes internos (IDs 1/4/6) sem o tag de subset.
+
+    Cada copia de fonte do arquivo de origem carrega um prefixo diferente
+    (ABCDEE+, MZBNSZ+...). Sem normalizar, dois subsets IDENTICOS geram bytes
+    diferentes e nunca sao fundidos por `_consolida_programas_fonte`.
+    """
+    nome = str(basefont).lstrip("/")
+    if "+" in nome:
+        nome = nome.split("+", 1)[1]
+    try:
+        nm = tt["name"]
+        for r in list(nm.names):
+            if r.nameID in (1, 4, 6):
+                nm.setName(nome, r.nameID, r.platformID, r.platEncID, r.langID)
+    except Exception:
+        pass
+
+
+def _tag_subset(pdf):
+    """Prefixo de subset de 6 letras, estavel por documento.
+
+    O motor usa 6 letras (ASJHEV+ArialMT). Aqui o valor e' DERIVADO do /ID do
+    trailer em vez de sorteado: rodar duas vezes no mesmo PDF tem de produzir o
+    mesmo arquivo (medicao, testes de regressao e diff entre versoes). Fontes
+    de documentos diferentes recebem prefixos diferentes.
+    """
+    try:
+        bruto = bytes(pdf.trailer.get("/ID")[0])
+    except Exception:
+        bruto = b"pdfagent"
+    n = zlib.crc32(bruto) & 0x3FFFFFFF
+    letras = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    out = []
+    for _ in range(6):
+        out.append(letras[n % 26])
+        n //= 26
+    return "".join(out)
 
 
 def _subset_fontes_cff(pdf, log):
@@ -517,6 +566,7 @@ def _subset_fontes_cid(pdf, log):
             ss = subset.Subsetter(opts)
             ss.populate(glyphs=nomes)
             ss.subset(tt)
+            _normaliza_nome_programa(tt, fo.get("/BaseFont", ""))
             buf = io.BytesIO()
             tt.save(buf)
             novo = buf.getvalue()
@@ -555,9 +605,7 @@ def _subset_fontes_cid(pdf, log):
                 c2g[Name("/Filter")] = Name("/FlateDecode")
             # tag de subset de 6 letras, como o motor faz (ASJHEV+ArialMT)
             try:
-                import random
-                import string
-                tag = "".join(random.choices(string.ascii_uppercase, k=6))
+                tag = _tag_subset(pdf)
                 nome = str(fo.get("/BaseFont", "")).lstrip("/")
                 if "+" in nome:
                     nome = nome.split("+", 1)[1]
@@ -1369,9 +1417,95 @@ def _recomprime_imagem(pdf, obj, spec, usos, log):
     return True, rotulo, dpi_final
 
 
+def _remove_assinaturas(pdf, log):
+    """Descarta campos de assinatura digital (o motor nao os preserva).
+
+    Medido em processo.pdf contra a saida recommended do iLovePDF: saem os 214
+    widgets /FT /Sig (com o carimbo /AP desenhado na pagina) e os 214
+    dicionarios /Type /Sig; os 13 links ficam. Assinatura nao sobrevive a
+    reescrita do arquivo, e o motor remove o campo em vez de deixa-lo invalido.
+    """
+    tirados = 0
+    for pagina in pdf.pages:
+        try:
+            anots = pagina.obj.get("/Annots")
+        except Exception:
+            continue
+        if anots is None or _tipo_obj(anots) != "array":
+            continue
+        try:
+            n = len(anots)
+        except Exception:
+            continue
+        manter = []
+        for i in range(n):
+            try:
+                an = anots[i]
+            except Exception:
+                continue
+            try:
+                if str(an.get("/FT", "")) == "/Sig":
+                    tirados += 1
+                    continue
+            except Exception:
+                pass
+            manter.append(an)
+        if len(manter) != n:
+            try:
+                if manter:
+                    pagina.obj["/Annots"] = pikepdf.Array(manter)
+                else:
+                    del pagina.obj["/Annots"]
+            except Exception:
+                pass
+    # /AcroForm /Fields: fora do corpus do gate (nenhum original tem form),
+    # mas o mesmo campo de assinatura pode viver so aqui.
+    try:
+        acro = pdf.Root.get("/AcroForm")
+    except Exception:
+        acro = None
+    if acro is not None and _eh_dict(acro):
+        try:
+            campos = acro.get("/Fields")
+        except Exception:
+            campos = None
+        if campos is not None and _tipo_obj(campos) == "array":
+            manter = []
+            try:
+                n = len(campos)
+            except Exception:
+                n = 0
+            for i in range(n):
+                try:
+                    c = campos[i]
+                except Exception:
+                    continue
+                try:
+                    if str(c.get("/FT", "")) == "/Sig":
+                        tirados += 1
+                        continue
+                except Exception:
+                    pass
+                manter.append(c)
+            if len(manter) != n:
+                try:
+                    if manter:
+                        acro["/Fields"] = pikepdf.Array(manter)
+                    else:
+                        del pdf.Root["/AcroForm"]
+                except Exception:
+                    pass
+    if tirados:
+        log("    assinaturas: %d campo(s)/widget(s) removido(s)" % tirados)
+    return tirados
+
+
 def _aplica_strip(pdf, strip, log):
     if not strip:
         return
+    if "assinaturas" in strip:
+        # observado no iLovePDF: campos de assinatura saem (ver _remove_assinaturas)
+        _remove_assinaturas(pdf, log)
     if "metadata" in strip:
         # O motor NAO apaga docinfo em nenhum nivel: nas 21 saidas reais o
         # docinfo mantem Author/Creator/Title (so datas e Producer mudam).
@@ -1800,6 +1934,56 @@ _TOK_WORD = re.compile(rb"[^\s<>\[\]()/%]+")
 _TOK_NUM = re.compile(rb"[+-]?(\d+\.?\d*|\.\d+)")
 
 
+# brancos + delimitadores do PDF (a mascara de imagem inline precisa dos dois).
+# NAO confundir com o `_DELIM` de outra funcao mais abaixo, que e' um set.
+_DELIM_INLINE = b" \t\r\n\f\x00()<>[]{}/%"
+
+
+def _mascara_imagens_inline(data):
+    """Troca o binario de `BI ... ID <bytes> EI` por espacos (mesmo tamanho).
+
+    O tokenizador nao conhece imagem inline: sem mascarar, os bytes da imagem
+    viram "tokens" e o RESTO da pagina deixa de ser lido. Foi assim que as
+    fontes da pg337 de processo.pdf foram consideradas sem uso e apagadas
+    (render 3,9% diferente). O binario termina em `EI` isolado por brancos.
+    """
+    if b"BI" not in data:
+        return data
+    out = bytearray(data)
+    i, n = 0, len(data)
+    while True:
+        j = data.find(b"BI", i)
+        if j < 0:
+            break
+        ant = data[j - 1:j] if j else b" "
+        pos = data[j + 2:j + 3]
+        if ant not in _DELIM_INLINE or (pos and pos not in _DELIM_INLINE):
+            i = j + 2
+            continue
+        k = data.find(b"ID", j + 2)
+        if k < 0:
+            break
+        if data[k - 1:k] not in _DELIM_INLINE or data[k + 2:k + 3] not in _DELIM_INLINE:
+            i = j + 2
+            continue
+        m = k + 3                 # depois de "ID" vem UM branco e o binario
+        e = m
+        while True:
+            e = data.find(b"EI", e)
+            if e < 0:
+                e = n
+                break
+            antes = data[e - 1:e]
+            depois = data[e + 2:e + 3]
+            if antes in _DELIM_INLINE and (not depois or depois in _DELIM_INLINE):
+                break
+            e += 2
+        for x in range(m, min(e, n)):
+            out[x] = 0x20
+        i = e + 2
+    return bytes(out)
+
+
 def _tokens_conteudo(data):
     """Tokeniza content stream cru em (tipo, valor).
 
@@ -1818,6 +2002,7 @@ def _tokens_conteudo(data):
         return cache
     if len(_TOKENS_CACHE) > 4096:
         _TOKENS_CACHE.clear()
+    data = _mascara_imagens_inline(data)
     toks = []
     i, n = 0, len(data)
     while i < n:
@@ -1995,6 +2180,24 @@ def _codigos_por_fonte(pdf):
     return por_obj
 
 
+def _tipo_obj(obj):
+    """Tipo real do Object do pikepdf: 'dictionary', 'array', 'stream', ...
+
+    NAO use `hasattr(obj, "keys")` nem "keys() levanta em array": em pikepdf
+    10.18 `keys()` de um array devolve [] SEM levantar excecao, entao o truque
+    antigo tratava array como dicionario vazio e a varredura parava ali (era a
+    causa de metade dos duplicados que sobravam em processo.pdf).
+    """
+    try:
+        return obj._type_name
+    except Exception:
+        return ""
+
+
+def _eh_dict(obj):
+    return _tipo_obj(obj) in ("dictionary", "stream")
+
+
 def _assinatura_fonte(fo):
     """Identidade da fonte: mesmo BaseFont + mesmo programa + mesmas larguras
     => os objetos sao intercambiaveis."""
@@ -2020,7 +2223,19 @@ def _assinatura_fonte(fo):
                     break
     except Exception:
         pass
-    return (bf, sub, enc, larg, prog)
+    # O /ToUnicode faz parte da identidade: duas copias do mesmo programa com
+    # ToUnicode diferente desenham igual mas EXTRAEM texto diferente. Fundi-las
+    # (era o caso de processo.pdf pg209: "Laudo" saia como "/audo") mantem o
+    # render e quebra busca/copia.
+    tou = b""
+    try:
+        tu = fo.get("/ToUnicode")
+        if tu is not None:
+            bruto = tu.read_raw_bytes()
+            tou = ("%d:%d" % (len(bruto), zlib.crc32(bruto))).encode()
+    except Exception:
+        pass
+    return (bf, sub, enc, larg, prog, tou)
 
 
 def _consolida_imagens(pdf, log):
@@ -2127,15 +2342,15 @@ def _consolida_imagens(pdf, log):
             continue
         vistos_res.add(marca)
         manter.append(res)
-        try:
-            chaves = list(res.keys())
-        except Exception:
-            try:
-                for item in res:
-                    pilha.append(item)
-            except Exception:
-                pass
+        if not _eh_dict(res):
+            if _tipo_obj(res) == "array":
+                try:
+                    for item in res:
+                        pilha.append(item)
+                except Exception:
+                    pass
             continue
+        chaves = list(res.keys())
         for k in chaves:
             try:
                 v = res[k]
@@ -2171,6 +2386,157 @@ def _consolida_imagens(pdf, log):
             pilha.append(v)
     log("    imagens consolidadas: %d duplicata(s) removida(s), %d objeto(s) mantido(s), "
         "%d referencia(s) reapontada(s)" % (len(mapa), len(vistos), trocas))
+    return mapa
+
+
+def _consolida_charprocs(pdf, log):
+    """Consolida charprocs de fonte Type3 identicos.
+
+    Type3 embute um stream por glifo; cada pagina traz a sua copia da fonte.
+    Medido em processo.pdf: 2.519 charprocs nossos contra 967 do iLovePDF,
+    com o mesmo glifo repetido 16x (deles 6-7x).
+    """
+    vistos = {}
+    mapa = {}
+    for obj in pdf.objects:
+        if not _eh_dict(obj):
+            continue
+        if str(obj.get("/Subtype", "")) != "/Type3":
+            continue
+        procs = obj.get("/CharProcs")
+        if procs is None or not _eh_dict(procs):
+            continue
+        try:
+            nomes = [str(k) for k in procs.keys()]
+        except Exception:
+            continue
+        for nome in nomes:
+            try:
+                s = procs[nome]
+            except Exception:
+                continue
+            og = getattr(s, "objgen", None)
+            if not og or not og[0]:
+                continue
+            try:
+                bruto = s.read_raw_bytes()
+            except Exception:
+                continue
+            chave = (len(bruto), zlib.crc32(bruto))
+            if chave in vistos:
+                if vistos[chave] != og:
+                    mapa[og] = vistos[chave]
+            else:
+                vistos[chave] = og
+    log("    charprocs Type3: %d copia(s) removida(s), %d glifo(s) distinto(s)"
+        % (len(mapa), len(vistos)))
+    return mapa
+
+
+def _consolida_programas_fonte(pdf, log):
+    """Consolida programas de fonte (FontFile*) byte a byte identicos.
+
+    O motor compartilha um mesmo programa entre varios dicionarios de fonte
+    (MergeEmbeddedFonts); medido em processo.pdf: 111 programas para 200 fontes
+    no iLovePDF contra 176 nossos.
+    """
+    vistos = {}
+    mapa = {}
+    for obj in pdf.objects:
+        if not _eh_dict(obj):
+            continue
+        if str(obj.get("/Type", "")) != "/FontDescriptor":
+            continue
+        for chave in ("/FontFile", "/FontFile2", "/FontFile3"):
+            try:
+                s = obj.get(chave)
+            except Exception:
+                continue
+            if s is None:
+                continue
+            og = getattr(s, "objgen", None)
+            if not og or not og[0]:
+                continue
+            try:
+                bruto = s.read_raw_bytes()
+            except Exception:
+                continue
+            k = (chave, len(bruto), zlib.crc32(bruto))
+            if k in vistos:
+                if vistos[k] != og:
+                    mapa[og] = vistos[k]
+            else:
+                vistos[k] = og
+    log("    programas de fonte: %d copia(s) removida(s), %d distinto(s)"
+        % (len(mapa), len(vistos)))
+    return mapa
+
+
+def _reaponta_tudo(pdf, mapa, log):
+    """Reaponta toda referencia indireta cujo objgen esteja no mapa.
+
+    As varreduras de /Resources so alcancam o que esta em resources; imagem e
+    fonte tambem aparecem em /SMask, /Alternates, /CharProcs, /AP de anotacao,
+    /Resources de Pattern e afins. Aqui a varredura e' sobre `pdf.objects`
+    inteiro, entao nenhuma copia sobrevive por falta de caminho.
+    """
+    if not mapa:
+        return 0
+    trocas = 0
+
+    def desce(cont, prof=0):
+        nonlocal trocas
+        if prof > 64:
+            return
+        tipo = _tipo_obj(cont)
+        if tipo in ("dictionary", "stream"):
+            try:
+                chaves = [str(k) for k in cont.keys()]
+            except Exception:
+                return
+            for k in chaves:
+                try:
+                    v = cont[k]
+                except Exception:
+                    continue
+                canonico = mapa.get(getattr(v, "objgen", None))
+                if canonico is not None:
+                    try:
+                        cont[k] = pdf.get_object(canonico)
+                        trocas += 1
+                        continue
+                    except Exception:
+                        pass
+                # so desce em container DIRETO: objeto indireto sera visitado
+                # como raiz em pdf.objects (e o grafo tem ciclos: /Parent).
+                if (not getattr(v, "is_indirect", False)
+                        and _tipo_obj(v) in ("dictionary", "array")):
+                    desce(v, prof + 1)
+        elif tipo == "array":
+            try:
+                n = len(cont)
+            except Exception:
+                return
+            for i in range(n):
+                try:
+                    v = cont[i]
+                except Exception:
+                    continue
+                canonico = mapa.get(getattr(v, "objgen", None))
+                if canonico is not None:
+                    try:
+                        cont[i] = pdf.get_object(canonico)
+                        trocas += 1
+                        continue
+                    except Exception:
+                        pass
+                if (not getattr(v, "is_indirect", False)
+                        and _tipo_obj(v) in ("dictionary", "array")):
+                    desce(v, prof + 1)
+
+    for obj in pdf.objects:
+        desce(obj)
+    log("    referencias reapontadas no documento inteiro: %d" % trocas)
     return trocas
 
 
@@ -2214,6 +2580,7 @@ def _consolida_fontes(pdf, log):
 
     def _remapea(fontes):
         nonlocal trocas, entradas, removidos
+        apagar = []
         for nome in list(fontes.keys()):
             entradas += 1
             try:
@@ -2230,11 +2597,19 @@ def _consolida_fontes(pdf, log):
                     pass
             # fonte sem nenhum glifo usado: sai do resource (o motor nao a grava)
             if og and og[0] and og not in usados:
-                try:
-                    del fontes[nome]
-                    removidos += 1
-                except Exception:
-                    pass
+                apagar.append(nome)
+        # NUNCA esvaziar um /Font: se TODAS seriam removidas, o conteudo
+        # daquela pagina provavelmente nao pode ser lido (imagem inline, CMap
+        # quebrado) e apagar tudo deixa a pagina sem fonte — o texto continua
+        # desenhado pelo leitor mas a extracao vira lixo (processo.pdf pg337).
+        if len(apagar) == len(fontes):
+            apagar = []
+        for nome in apagar:
+            try:
+                del fontes[nome]
+                removidos += 1
+            except Exception:
+                pass
         return 1
 
     vistos_res = set()
@@ -2290,30 +2665,29 @@ def _consolida_fontes(pdf, log):
             continue
         vistos_res.add(marca)
         manter.append(res)          # evita reuso de id() durante a varredura
-        # hasattr(res,"keys") e' True para QUALQUER Object do pikepdf (o metodo
-        # existe no tipo), entao a distincao dicionario/array tem de ser por
-        # tentativa: keys() levanta em array e a iteracao levanta em dicionario.
-        try:
-            chaves = [str(k) for k in res.keys()]
-            eh_dict = True
-        except Exception:
-            eh_dict = False
-        if eh_dict:
+        # NUNCA inferir dicionario por keys(): em pikepdf 10.18 keys() de um
+        # array devolve [] sem levantar, e a varredura pararia no primeiro
+        # array (/ProcSet, /Annots, /Kids...).
+        if _eh_dict(res):
             try:
                 fontes = res.get("/Font")
             except Exception:
                 fontes = None
-            if fontes is not None and hasattr(fontes, "keys"):
+            if fontes is not None and _eh_dict(fontes):
                 try:
                     dicts += _remapea(fontes)
                 except Exception:
                     pass
+            try:
+                chaves = [str(k) for k in res.keys()]
+            except Exception:
+                chaves = []
             for k in chaves:
                 try:
                     pilha.append(res[k])
                 except Exception:
                     pass
-        else:
+        elif _tipo_obj(res) == "array":
             try:
                 for item in res:
                     pilha.append(item)
@@ -2323,7 +2697,7 @@ def _consolida_fontes(pdf, log):
         "%d referencia(s) reapontada(s), %d fonte(s) sem uso removida(s) "
         "[%d dict(s) /Font, %d entrada(s)]"
         % (len(mapa), len(vistos), trocas, removidos, dicts, entradas))
-    return trocas
+    return mapa
 
 
 def _subset_fontes(pdf, log):
@@ -2331,8 +2705,6 @@ def _subset_fontes(pdf, log):
 
     Replica o observado: prefixo do BaseFont trocado, Widths/Encoding
     mantidos, troca so se ficar menor."""
-    import random
-    import string
     try:
         from fontTools import subset
         from fontTools.ttLib import TTFont
@@ -2343,90 +2715,91 @@ def _subset_fontes(pdf, log):
     if not usos:
         return
     contagem = _conta_streams_fonte(pdf)
-    tag = "".join(random.choices(string.ascii_uppercase, k=6))
+    tag = _tag_subset(pdf)
     n = 0
     vistos = set()
-    for pagina in pdf.pages:
+    # Itera TODAS as fontes com glifos usados — inclusive as que vivem so no
+    # /Resources de um Form XObject ou de uma aparencia de anotacao. A versao
+    # antiga olhava apenas page.Resources e deixava programas inteiros no
+    # arquivo (medido em processo.pdf: Calibri de 79 KB nunca subsetada).
+    pares = []
+    for og, codes in usos.items():
+        if not codes or og in vistos:
+            continue
+        vistos.add(og)
         try:
-            fontes = dict(pagina.Resources.get("/Font", {}))
+            fo = pdf.get_object(og)
         except Exception:
             continue
-        for _nome, fo in fontes.items():
+        pares.append((og, fo, codes))
+    for og, fo, codes in pares:
+        try:
+            if str(fo.get("/Subtype", "")) == "/Type0":
+                continue          # CID tem caminho proprio (_subset_fontes_cid)
+            desc = fo.get("/FontDescriptor")
+        except Exception:
+            continue
+        if desc is None:
+            continue
+        fkey = next((k for k in ("/FontFile2", "/FontFile3", "/FontFile")
+                     if k in desc), None)
+        if fkey is None:
+            continue  # nao embutida: nada a fazer
+        _garante_stream_exclusivo(pdf, desc, fkey, contagem, log)
+        try:
+            raw = desc[fkey].read_bytes()
+            tt = TTFont(io.BytesIO(raw))
+            nomes, diff_map, tab_base = _nomes_glifos_usados(fo, codes, tt)
+            if not nomes:
+                continue
+            faltando = [c for c in codes
+                        if _glifo_do_codigo(c, diff_map, tab_base, tt) is None]
+            if faltando:
+                continue  # nao sabemos mapear todos: nao arriscar
+            opts = subset.Options()
+            opts.layout_features = ["*"]
+            _politica_subset(opts)
+            ss = subset.Subsetter(opts)
+            ss.populate(glyphs=sorted(nomes))
+            ss.subset(tt)
+            _normaliza_nome_programa(tt, fo.get("/BaseFont", ""))
+            # verifica que todo codigo usado continua tendo glifo
+            restantes = set(tt.getGlyphOrder())
+            if any(_glifo_do_codigo(c, diff_map, tab_base, tt) not in restantes
+                   for c in codes):
+                continue
+            buf = io.BytesIO()
+            tt.save(buf)
+            novo = buf.getvalue()
+            if len(novo) >= len(raw):
+                continue
+            alvo = desc[fkey]
+            cur_filter = alvo.get("/Filter", None)
+            if cur_filter is None:
+                alvo.write(novo)
+            elif str(cur_filter) == "/FlateDecode":
+                alvo.write(zlib.compress(novo, 9))
+                alvo[Name("/Filter")] = Name("/FlateDecode")
+            else:
+                continue
+            if fkey == "/FontFile2":
+                alvo[Name("/Length1")] = len(novo)
+            else:
+                for k in ("/Length1", "/Length2", "/Length3"):
+                    try:
+                        del alvo[k]
+                    except Exception:
+                        pass
             try:
-                og = fo.objgen
+                base = str(fo.get("/BaseFont", ""))
+                if "+" in base:
+                    fo[Name("/BaseFont")] = Name(f"/{tag}+{base.split('+', 1)[1]}")
             except Exception:
-                continue
-            if og in vistos:
-                continue
-            vistos.add(og)
-            codes = usos.get(og)
-            if not codes:
-                continue
-            try:
-                desc = fo.get("/FontDescriptor")
-            except Exception:
-                continue
-            if desc is None:
-                continue
-            fkey = next((k for k in ("/FontFile2", "/FontFile3", "/FontFile")
-                         if k in desc), None)
-            if fkey is None:
-                continue  # nao embutida: nada a fazer
-            _garante_stream_exclusivo(pdf, desc, fkey, contagem, log)
-            try:
-                raw = desc[fkey].read_bytes()
-                tt = TTFont(io.BytesIO(raw))
-                nomes, diff_map, tab_base = _nomes_glifos_usados(fo, codes, tt)
-                if not nomes:
-                    continue
-                ordem_antes = set(tt.getGlyphOrder())
-                faltando = [c for c in codes
-                            if _glifo_do_codigo(c, diff_map, tab_base, tt) is None]
-                if faltando:
-                    continue  # nao sabemos mapear todos: nao arriscar
-                opts = subset.Options()
-                opts.layout_features = ["*"]
-                _politica_subset(opts)
-                ss = subset.Subsetter(opts)
-                ss.populate(glyphs=sorted(nomes))
-                ss.subset(tt)
-                # verifica que todo codigo usado continua tendo glifo
-                restantes = set(tt.getGlyphOrder())
-                if any(_glifo_do_codigo(c, diff_map, tab_base, tt) not in restantes
-                       for c in codes):
-                    continue
-                buf = io.BytesIO()
-                tt.save(buf)
-                novo = buf.getvalue()
-                if len(novo) >= len(raw):
-                    continue
-                alvo = desc[fkey]
-                cur_filter = alvo.get("/Filter", None)
-                if cur_filter is None:
-                    alvo.write(novo)
-                elif str(cur_filter) == "/FlateDecode":
-                    alvo.write(zlib.compress(novo, 9))
-                    alvo[Name("/Filter")] = Name("/FlateDecode")
-                else:
-                    continue
-                if fkey == "/FontFile2":
-                    alvo[Name("/Length1")] = len(novo)
-                else:
-                    for k in ("/Length1", "/Length2", "/Length3"):
-                        try:
-                            del alvo[k]
-                        except Exception:
-                            pass
-                try:
-                    base = str(fo.get("/BaseFont", ""))
-                    if "+" in base:
-                        fo[Name("/BaseFont")] = Name(f"/{tag}+{base.split('+', 1)[1]}")
-                except Exception:
-                    pass
-                n += 1
-            except Exception as ex:
-                log(f"    fonte {og}: subset falhou ({ex})")
-                continue
+                pass
+            n += 1
+        except Exception as ex:
+            log(f"    fonte {og}: subset falhou ({ex})")
+            continue
     if n:
         log(f"    fontes re-subsetadas: {n}")
 
@@ -2930,8 +3303,23 @@ def _normaliza_conteudo(pdf, log):
     def normaliza(instrucoes):
         saida = []
         identidade = True
+        # estado de texto: re-setar o MESMO valor e' no-op e sai do stream.
+        # TL NAO entra: `TD tx ty` tambem muda o leading (TL = -ty), entao o
+        # valor rastreado ficaria velho e o `TL` seguinte seria descartado por
+        # engano (medido: 3 paginas com texto extraido diferente).
+        estado = {"Tc": 0.0, "Tw": 0.0, "Tz": 100.0, "Ts": 0.0,
+                  "Tr": 0.0}
         for operandos, operador in instrucoes:
             op = str(operador)
+            if op in estado and len(operandos) == 1:
+                try:
+                    v = float(operandos[0])
+                except Exception:
+                    v = None
+                if v is not None:
+                    if v == estado[op]:
+                        continue
+                    estado[op] = v
             if op == "BT":
                 identidade = True
             elif op in ("Td", "TD", "T*", "'", '"'):
@@ -2945,8 +3333,9 @@ def _normaliza_conteudo(pdf, log):
                 if (identidade and vals and len(vals) == 6
                         and vals[0] == 1 and vals[1] == 0
                         and vals[2] == 0 and vals[3] == 1):
-                    novo = pikepdf.Array([pikepdf.Object.parse(repr(vals[4]).encode()),
-                                          pikepdf.Object.parse(repr(vals[5]).encode())])
+                    novo = pikepdf.Array([
+                        pikepdf.Object.parse(_fmt_num(vals[4]).encode()),
+                        pikepdf.Object.parse(_fmt_num(vals[5]).encode())])
                     saida.append(pikepdf.ContentStreamInstruction(
                         novo, pikepdf.Operator("Td")))
                     identidade = False
@@ -2991,6 +3380,52 @@ def _normaliza_conteudo(pdf, log):
         log(f"    content normalizado: {n_pag} pagina(s), {ganho:,} B")
 
 
+def _unifica_conteudo(pdf, log):
+    """Junta o /Contents de cada pagina num unico stream.
+
+    O motor reescreve o conteudo e grava 1 stream por pagina (processo.pdf:
+    376 no iLovePDF, 501 nossos e 1.380 no original). Cada stream extra custa
+    o proprio dicionario e um flush do deflate. Nao reparseia nada: so
+    concatena os bytes ja decodificados (os streams de uma pagina sao
+    concatenados na mesma ordem pelo leitor).
+    """
+    n = 0
+    ganho = 0
+    for pagina in pdf.pages:
+        try:
+            cont = pagina.obj.get("/Contents")
+        except Exception:
+            continue
+        if cont is None or _tipo_obj(cont) != "array" or len(cont) < 2:
+            continue
+        try:
+            partes = []
+            antes = 0
+            for s in cont:
+                partes.append(s.read_bytes())
+                antes += len(s.read_raw_bytes())
+        except Exception:
+            continue
+        if not partes:
+            continue
+        dados = b"\n".join(partes)
+        try:
+            novo = pdf.make_stream(b"")
+            novo.write(zlib.compress(dados, 9), filter=Name("/FlateDecode"),
+                       type_check=False)
+            depois = len(novo.read_raw_bytes())
+            if depois >= antes:
+                continue
+            pagina.obj["/Contents"] = novo
+            n += 1
+            ganho += antes - depois
+        except Exception:
+            continue
+    if n:
+        log("    conteudo unificado: %d pagina(s), %d bytes a menos" % (n, ganho))
+    return ganho
+
+
 def _remove_marcadores_mc(pdf, log):
     """Remove marcadores de conteudo (BMC/BDC/EMC) sem /OC.
 
@@ -3007,8 +3442,16 @@ def _remove_marcadores_mc(pdf, log):
         novo = []
         prof_mc = 0
         removeu = False
+        tem_inline = False
         for operandos, operador in instrucoes:
             op = str(operador)
+            if op == "INLINE IMAGE" or any(
+                    isinstance(x, pikepdf.PdfInlineImage) for x in operandos):
+                # `unparse_content_stream` nao re-serializa imagem inline
+                # ("don't know how to encode value <PdfInlineImage>"): reescrever
+                # a pagina inteira quebraria. Pula a pagina (processo.pdf pg337).
+                tem_inline = True
+                break
             if op in ("BDC", "BMC"):
                 txt = " ".join(str(x) for x in operandos)
                 if "/OC" in txt:
@@ -3021,7 +3464,7 @@ def _remove_marcadores_mc(pdf, log):
                 prof_mc -= 1
                 continue
             novo.append(pikepdf.ContentStreamInstruction(operandos, operador))
-        if not removeu:
+        if tem_inline or not removeu:
             continue
         try:
             try:
@@ -3136,6 +3579,7 @@ def comprimir(entrada, saida, nivel="recommended", log=print, _guard=None,
         if "structtree" in spec["strip"]:
             _remove_marcadores_mc(pdf, log)
         _normaliza_conteudo(pdf, log)
+        _unifica_conteudo(pdf, log)
         if spec.get("remove_fontes_padrao"):
             _substitui_fontes_padrao(pdf, log)
         if spec.get("subset_fontes", True):
@@ -3143,10 +3587,17 @@ def comprimir(entrada, saida, nivel="recommended", log=print, _guard=None,
             _subset_fontes_cid(pdf, log)
             if not _sem_risco and _TENTA_CFF:
                 _subset_fontes_cff(pdf, log)
-        # RemoveRedundantObjects do motor: consolida fontes identicas (o motor
-        # nao carrega o mesmo programa embutido centenas de vezes)
-        _consolida_fontes(pdf, log)
-        _consolida_imagens(pdf, log)
+        # RemoveRedundantObjects/MergeEmbeddedFonts do motor: consolida fontes,
+        # imagens, charprocs Type3 e programas de fonte identicos e depois
+        # reaponta as referencias no documento INTEIRO (nao so em /Resources).
+        mapa_dup = {}
+        for _consolida in (_consolida_fontes, _consolida_imagens,
+                           _consolida_programas_fonte, _consolida_charprocs):
+            try:
+                mapa_dup.update(_consolida(pdf, log))
+            except Exception as ex:
+                log("    consolidacao %s falhou: %s" % (_consolida.__name__, ex))
+        _reaponta_tudo(pdf, mapa_dup, log)
         _carimba(pdf, log, xmp_original)
         if spec.get("otimiza_recursos"):
             try:
@@ -3156,8 +3607,9 @@ def comprimir(entrada, saida, nivel="recommended", log=print, _guard=None,
                 log(f"    remove_unreferenced: {ex}")
 
         log("[5] salvando")
+        _recomprime_flate_max(pdf, log)
         pdf.save(saida, object_stream_mode=pikepdf.ObjectStreamMode.generate,
-                 recompress_flate=True)
+                 recompress_flate=False)
     finally:
         pdf.close()
     tam_depois = os.path.getsize(saida)
@@ -3192,6 +3644,48 @@ def comprimir(entrada, saida, nivel="recommended", log=print, _guard=None,
     log(f"[6] {tam_antes:,} -> {tam_depois:,} bytes (-{razao:.1f}%)")
     return {"antes": tam_antes, "depois": tam_depois, "razao": razao,
             "nivel": nivel}
+
+
+def _recomprime_flate_max(pdf, log):
+    """Recomprime todo stream /FlateDecode em nivel 9 (o qpdf usa nivel 6).
+
+    O `Object.write` do pikepdf, sem `filter=`, trata os bytes como NAO
+    codificados e aplica o /Filter de novo — passar zlib aqui sem o argumento
+    grava lixo (content stream ilegivel). Com `filter=/FlateDecode` os bytes
+    entram como estao. Depois disso o save tem de usar recompress_flate=False,
+    senao o qpdf desfaz o nivel 9.
+    """
+    n = 0
+    ganho = 0
+    for obj in pdf.objects:
+        try:
+            if not isinstance(obj, pikepdf.Stream):
+                continue
+            if str(obj.get("/Filter", "")) != "/FlateDecode":
+                continue
+            if obj.get("/DecodeParms") is not None:
+                continue      # preditor: read_bytes() ja desfaz o preditor
+            cru = obj.read_raw_bytes()
+            if len(cru) < 64:
+                continue
+            dados = obj.read_bytes()
+        except Exception:
+            continue
+        try:
+            novo = zlib.compress(dados, 9)
+        except Exception:
+            continue
+        if len(novo) + 2 >= len(cru):
+            continue
+        try:
+            obj.write(novo, filter=Name("/FlateDecode"), type_check=False)
+            n += 1
+            ganho += len(cru) - len(novo)
+        except Exception:
+            continue
+    if n:
+        log("    flate nivel 9: %d stream(s), %d bytes a menos" % (n, ganho))
+    return ganho
 
 
 def _nome_saida(entrada, saida, nivel):

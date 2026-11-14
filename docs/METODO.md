@@ -345,3 +345,81 @@ Texto extraído e hyperlinks: **idênticos ao original em todos os 21 casos**.
   (`OpenW` → `0x8A120002`); validação foi por A/B externo.
 - DLL copiada p/ `%TEMP%` só p/ análise local (não redistribuída); chave de
   licença do iLovePDF **nunca extraída nem usada**.
+
+---
+
+## 5. Rodada `processo.pdf` — 34 MB, 376 páginas (TJSP/SAJ)
+
+Documento real fora do corpus do gate, usado como caso de estresse.
+Alvo: `lab/processo-compressed.pdf` (saída *recommended* do iLovePDF,
+12.227.010 B) a partir de `lab/processo.pdf` (34.070.740 B, 376 páginas,
+676 imagens, 1.219 fontes, 214 assinaturas digitais).
+
+| etapa | nosso | iLovePDF |
+|---|---|---|
+| antes desta rodada | 15.451.230 B | 12.227.010 B |
+| depois | **12.244.996 B (−64,0%)** | 12.227.010 B |
+| extreme | 9.441.093 B (−72,3%) | — |
+| low | 18.107.616 B (−46,9%) | — |
+
+Texto extraído: **idêntico ao original nas 376 páginas**. Render contra a saída
+do iLovePDF: 0,000% na maioria; ≤0,11% nas páginas com máscara 1-bit (o motor
+reduz a máscara à metade, nós mantemos a resolução — 378 KB a mais de máscara
+do lado dele, compensados por 411 KB a menos em imagens).
+
+### Causas-raiz (todas medidas, cada uma virou código + teste)
+
+1. **`keys()` num array não levanta em pikepdf 10.18** — devolve `[]`. Todo laço
+   "tenta `keys()`, cai para iteração" tratava `/Kids`, `/Annots` e `/ProcSet`
+   como dicionário vazio e **parava a varredura ali**. Fix: `_tipo_obj()` lê
+   `obj._type_name` ('dictionary'/'stream'/'array').
+2. **Assinaturas digitais**: o iLovePDF remove os 214 widgets `/FT /Sig` (com o
+   carimbo `/AP` visível) e os 214 dicionários `/Type /Sig` (1,08 MB de
+   `/Contents`). `_remove_assinaturas()` replica em recommended/extreme; low não
+   tem `Strip` e mantém. Efeito visível: o selo "ASSINATURA DIGITAL" sai da
+   página, exatamente como na saída de referência.
+3. **Charprocs Type3**: o mesmo glifo aparecia **16×** (uma cópia da fonte por
+   página). Dedupe por conteúdo → 967 glifos distintos, o número exato do
+   iLovePDF (`_consolida_charprocs`).
+4. **Programas de fonte**: dedupe por conteúdo (`_consolida_programas_fonte`) e
+   subset das fontes que vivem **só** no `/Resources` de um Form XObject — o
+   laço olhava apenas `page.Resources` e deixava uma Calibri de 79 KB inteira.
+5. **Referências fora de `/Resources`**: imagem/fonte também aparecem em
+   `/SMask`, `/Alternates`, `/CharProcs`, `/AP`. `_reaponta_tudo()` varre
+   `pdf.objects` inteiro, descendo **só em containers diretos** (o grafo tem
+   ciclos em `/Parent`; recursar em indireto estoura a pilha).
+6. **Flate nível 9**: o qpdf grava em nível 6. Recompressão própria +
+   `save(..., recompress_flate=False)` = 75.442 B em `processo.pdf`.
+   ⚠️ `Object.write(zlib_data)` **sem** `filter=` faz o pikepdf comprimir de
+   novo (dupla compressão, content stream ilegível); o correto é
+   `write(zlib_data, filter=Name("/FlateDecode"), type_check=False)`.
+7. **Tabelas da fonte**: o motor descarta `hdmx/VDMX/gasp/kern/LTSH/PCLT/DSIG`
+   e deixa a tabela `name` com **7 registros** (IDs 0–6, Windows, idioma 0x409).
+   Nosso subset mantinha todas as línguas: 11.906 B contra 378 B numa ArialMT
+   de 52 glifos. Só isso valeu 111 KB.
+8. **Imagem inline `BI … ID <binário> EI`**: o tokenizador não a conhecia, o
+   binário virava "tokens" e **o resto da página deixava de ser lido**; as
+   fontes da página eram consideradas sem uso e **apagadas** (pg337/338/363:
+   render 3,9–8,7% diferente, texto extraído virando lixo). Fix:
+   `_mascara_imagens_inline()` (mesmo comprimento, offsets preservados) + regra
+   "nunca esvaziar um `/Font`" como rede de segurança.
+9. **`/ToUnicode` faz parte da identidade da fonte**: duas cópias do MESMO
+   programa com CMap diferente desenham igual mas **extraem texto diferente**
+   ("Laudo" saía "/audo"). `_assinatura_fonte()` passou a incluir o CMap.
+10. **Prefixo de subset determinístico**: `_tag_subset()` deriva as 6 letras do
+    `/ID` do trailer. Antes o prefixo era sorteado e o mesmo input produzia
+    arquivos com 10–30 KB de diferença (impossível comparar rodadas).
+11. **`extreme` falhava** em páginas com imagem inline
+    (`don't know how to encode value <PdfInlineImage>`): `_remove_marcadores_mc`
+    agora pula essas páginas em vez de reescrever o stream.
+
+### O que ainda difere (honesto)
+
+- **Fontes**: 191 programas (1,77 MB) contra 111 (0,94 MB). O motor funde
+  (`MergeEmbeddedFonts`) todos os subsets da mesma fonte-fonte num programa só;
+  nós subsetamos por dicionário. Fechar exige subset por união de glifos.
+- **Conteúdo**: 21,0 MB descomprimidos contra 16,6 MB do motor — ele reescreve
+  o stream inteiro com um serializador mais econômico.
+- **Máscaras 1-bit**: o motor as reamostra junto com a imagem; nós mantemos.
+  Isso nos deixa *maiores* aí, e as imagens *menores* no total (−411 KB).
+- Sem `ConvertToCFF` e sem MRC (fora de escopo, como já documentado em 4b).

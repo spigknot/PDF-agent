@@ -110,6 +110,14 @@ def teste_cli():
                 ", ".join(problemas))
 
 
+def teste_consolidacao():
+    """Regressao de consolidacao: fontes com /ToUnicode diferente nao fundem."""
+    rc, saida = roda([PY, os.path.join(RAIZ, "tests", "test_consolidacao.py")])
+    ok = rc == 0 and "TUDO OK" in saida
+    return item("consolidacao de objetos (ToUnicode)", ok,
+                "" if ok else saida.strip().splitlines()[-1][:120])
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--lab", default=LAB_PADRAO)
@@ -118,7 +126,8 @@ def main():
     args = ap.parse_args()
 
     print("== verificacao do compressor ==  (%s)" % RAIZ)
-    resultados = [teste_niveis(), teste_exit_code(), teste_cli(), teste_launcher()]
+    resultados = [teste_niveis(), teste_exit_code(), teste_cli(), teste_launcher(),
+                  teste_consolidacao()]
     par_ok, _n_difs = teste_paridade(args.lab, args.max_difs)
     resultados.append(par_ok)
 

@@ -119,11 +119,26 @@ Scripts de avaliação (em `C:\Users\Gustavo\AppData\Local\Temp\rea_lab2\`):
 
 ---
 
+## Rodada processo.pdf (34 MB, 376 páginas, TJSP/SAJ)
+
+Corpus de estresse fora do gate. `processo.pdf` (34.070.740 B) →
+**12.244.996 B (−64,0%)** contra **12.227.010 B** do iLovePDF (recommended);
+extreme 9.441.093 B (−72,3%); low 18.107.616 B (−46,9%). Tempo 148–156 s.
+
+- **Texto extraído idêntico ao original nas 376 páginas** (era 7 páginas com
+  divergência: `/ToUnicode` fora da identidade da fonte e fontes apagadas por
+  página com imagem inline).
+- **Render contra a saída do iLovePDF**: 0,000% na maioria das páginas; ≤0,11%
+  nas páginas com máscara 1-bit (única diferença estrutural que sobra lá).
+- O gate do corpus continua **0/21** e o total do corpus caiu para
+  **3.998.962 B** contra 4.203.565 B do iLovePDF (**−4,87%**).
+- Detalhe técnico de cada achado: `docs/METODO.md` §5.
+
 ## Placar final (21 pares = 7 PDFs × 3 níveis)
 
 | eixo | nosso | iLovePDF |
 |---|---|---|
-| tamanho total | **4.040.405 B** | 4.203.565 B (**−3,9%**) |
+| tamanho total | **3.998.962 B** | 4.203.565 B (**−4,87%**) |
 | menor em | **21 / 21** | 0 |
 | algum arquivo maior | **nenhum** | — |
 | PSNR por imagem (158) | **33,22 dB** | 30,79 dB |
@@ -161,6 +176,17 @@ número e a mesma contagem que o iLovePDF produz.
    saturação 184 viravam `/DeviceGray` (PSNR 20,9 dB).
 9. **Subset CFF reprovado duas vezes** (fontTools reescreve o charset CID):
    8,5–9,4% de divergência, mesmo com `retain_gids`. `_TENTA_CFF = False`.
+10. **`keys()` num array devolve `[]` (pikepdf 10.18)** — nunca inferir
+    dicionário por `keys()`: use `obj._type_name`. Era a causa de metade das
+    imagens/formas duplicadas que sobravam.
+11. **Recursar em objeto indireto no remapeamento** estoura a pilha: o grafo tem
+    ciclo em `/Parent`. Só descer em container direto.
+12. **`Object.write(zlib_data)` sem `filter=`** comprime de novo (dupla
+    compressão) — passar `filter=Name("/FlateDecode"), type_check=False`.
+13. **Imagem inline (`BI…ID…EI`) não mascarada** fazia o tokenizador parar e as
+    fontes da página serem apagadas como "sem uso" (render 3,9–8,7% errado).
+14. **Fundir fontes com `/ToUnicode` diferente** mantém o render e quebra a
+    extração de texto ("Laudo" → "/audo").
 
 ---
 
