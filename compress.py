@@ -2023,6 +2023,96 @@ def _assinatura_fonte(fo):
     return (bf, sub, enc, larg, prog)
 
 
+def _consolida_imagens(pdf, log):
+    """Consolida imagens identicas num unico objeto (RemoveRedundantObjects).
+
+    O motor grava uma vez o mesmo XObject re-embutido pagina a pagina. Medido
+    em processo.pdf: 676 objetos de imagem nossos contra 266 do iLovePDF.
+    Assinatura: bytes crus + filtro + dimensoes + espaco de cor.
+    """
+    vistos = {}
+    mapa = {}
+    for obj in pdf.objects:
+        try:
+            if not isinstance(obj, pikepdf.Stream):
+                continue
+            if str(obj.get("/Subtype", "")) != "/Image":
+                continue
+            og = obj.objgen
+            if not og or not og[0]:
+                continue
+            bruto = obj.read_raw_bytes()
+            chave = (len(bruto), zlib.crc32(bruto), str(obj.get("/Filter", "")),
+                     int(obj.get("/Width", 0)), int(obj.get("/Height", 0)),
+                     str(obj.get("/ColorSpace", "")), int(obj.get("/BitsPerComponent", 0)))
+        except Exception:
+            continue
+        if chave in vistos:
+            mapa[og] = vistos[chave]
+        else:
+            vistos[chave] = og
+    if not mapa:
+        return 0
+    trocas = 0
+    pilha = []
+    for pagina in pdf.pages:
+        try:
+            pilha.append(pagina.Resources)
+        except Exception:
+            pass
+    vistos_res = set()
+    manter = []
+    while pilha:
+        res = pilha.pop()
+        if res is None:
+            continue
+        try:
+            og = res.objgen
+        except Exception:
+            og = None
+        marca = og if (og and og[0]) else ("d", id(res))
+        if marca in vistos_res:
+            continue
+        vistos_res.add(marca)
+        manter.append(res)
+        try:
+            chaves = list(res.keys())
+        except Exception:
+            try:
+                for item in res:
+                    pilha.append(item)
+            except Exception:
+                pass
+            continue
+        for k in chaves:
+            try:
+                v = res[k]
+            except Exception:
+                continue
+            if str(k) == "/XObject" and v is not None:
+                try:
+                    nomes = list(v.keys())
+                except Exception:
+                    nomes = []
+                for nome in nomes:
+                    try:
+                        alvo = v[nome].objgen
+                    except Exception:
+                        continue
+                    canonico = mapa.get(alvo)
+                    if canonico is not None:
+                        try:
+                            v[nome] = pdf.get_object(canonico)
+                            trocas += 1
+                        except Exception:
+                            pass
+                continue
+            pilha.append(v)
+    log("    imagens consolidadas: %d duplicata(s) removida(s), %d objeto(s) mantido(s), "
+        "%d referencia(s) reapontada(s)" % (len(mapa), len(vistos), trocas))
+    return trocas
+
+
 def _consolida_fontes(pdf, log):
     """Consolida fontes identicas num unico objeto.
 
@@ -2967,6 +3057,7 @@ def comprimir(entrada, saida, nivel="recommended", log=print, _guard=None,
         # RemoveRedundantObjects do motor: consolida fontes identicas (o motor
         # nao carrega o mesmo programa embutido centenas de vezes)
         _consolida_fontes(pdf, log)
+        _consolida_imagens(pdf, log)
         _carimba(pdf, log, xmp_original)
         if spec.get("otimiza_recursos"):
             try:
