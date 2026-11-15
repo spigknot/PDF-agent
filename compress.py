@@ -891,16 +891,24 @@ def _tamanhos_na_pagina(pdf):
                         continue
                     caminha(sub_ops, sub_res, _mul(ctm, m), prof + 1)
 
+    _tparse = 0.0
+    _tcaminha = 0.0
     for pagina in pdf.pages:
+        _tp = _time.time()
         try:
             ops = pikepdf.parse_content_stream(pagina, "q Q cm Do")
         except Exception:
             continue
+        _tparse += _time.time() - _tp
         try:
             res = pagina.Resources
         except Exception:
             res = {}
+        _tc = _time.time()
         caminha(ops, res, (1, 0, 0, 1, 0, 0), 0)
+        _tcaminha += _time.time() - _tc
+    if os.environ.get("PDFAGENT_DEBUG_TEMPO"):
+        print("    dpi: parse %.1fs, rastreio %.1fs" % (_tparse, _tcaminha))
     return usos
 
 
@@ -3948,6 +3956,11 @@ def _coleta_draws(pdf):
         except Exception:
             pag_bbox = None
         try:
+            # NAO filtrar operadores aqui: `_coleta_draws` guarda `cm_idx`
+            # (posicao da instrucao `cm`) e `_aplica_clip_imagens` reparseia a
+            # pagina SEM filtro para editar essa posicao. Com filtro os indices
+            # desalinham e o clip edita a instrucao errada — medido: gate caiu
+            # para 2/21 no corpus. O ganho do filtro (2,2 s) nao paga.
             instrucoes = list(pikepdf.parse_content_stream(pagina))
         except Exception:
             continue
@@ -4069,7 +4082,10 @@ def _aplica_clip_imagens(pdf, log):
     So age quando o desenho e' unico, sem rotacao e com clip retangular.
     Reescreve o `cm` que precede o `Do` e recorta os pixels.
     """
+    _td0 = _time.time()
     draws = _coleta_draws(pdf)
+    if os.environ.get("PDFAGENT_DEBUG_TEMPO"):
+        print("    clip: coleta_draws %.1fs" % (_time.time() - _td0))
     if not draws:
         return 0
     from collections import Counter
@@ -4528,15 +4544,15 @@ def _normaliza_conteudo(pdf, log):
         return
     resultados = None
     usar_pool = (not getattr(sys, "frozen", False) and len(tarefas) > 8
-                 and (os.cpu_count() or 1) > 1)
+                 and (os.cpu_count() or 1) > 1
+                 and os.environ.get("PDFAGENT_PROC_NORM", "1") != "0")
     if usar_pool:
         try:
             from concurrent.futures import ProcessPoolExecutor
-            with ProcessPoolExecutor(
-                    max_workers=min(os.cpu_count() or 2, 12)) as pool:
+            with ProcessPoolExecutor(max_workers=_workers_processo()) as pool:
                 resultados = list(pool.map(_normaliza_stream,
                                            [t[1] for t in tarefas],
-                                           chunksize=8))
+                                           chunksize=4))
         except Exception as ex:
             log("    normaliza conteudo: pool indisponivel (%s); em serie" % ex)
             resultados = None
@@ -4760,6 +4776,45 @@ def _submete(fn, *args):
     return _POOL.submit(fn, *args)
 
 
+def _ram_livre_mb():
+    """RAM fisica disponivel em MB (None se nao der para saber)."""
+    try:
+        import ctypes
+
+        class _MS(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong),
+                        ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_ulonglong),
+                        ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong),
+                        ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong),
+                        ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+        m = _MS()
+        m.dwLength = ctypes.sizeof(_MS)
+        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m))
+        return int(m.ullAvailPhys // (1024 * 1024))
+    except Exception:
+        return None
+
+
+def _workers_processo():
+    """Workers de processo: CPUs x RAM disponivel x knob do usuario.
+
+    Cada worker carrega uma imagem RGB grande (~15 MB) mais o buffer de
+    trabalho; 200 MB por worker e' estimativa conservadora. Sem isso, maquina
+    de 8 GB com 24 workers pode ir para swap e ficar MAIS lenta que threads.
+    """
+    cpus = os.cpu_count() or 1
+    pedido = int(os.environ.get("PDFAGENT_PROC_WORKERS", "24"))
+    n = min(cpus, pedido)
+    ram = _ram_livre_mb()
+    if ram:
+        n = min(n, max(1, ram // 200))
+    return max(1, n)
+
+
 def _job_leve(job):
     """Job sem os objetos pikepdf (`obj`/`m_obj` nao sao picklables).
 
@@ -4785,8 +4840,7 @@ def _submete_proc(job):
     global _POOL_PROC
     if os.environ.get("PDFAGENT_PROC_IMG", "1") == "0":
         return None
-    n = min(os.cpu_count() or 1,
-            int(os.environ.get("PDFAGENT_PROC_WORKERS", "24")))
+    n = _workers_processo()
     if n <= 1 or getattr(sys, "frozen", False):
         return None
     try:
@@ -4858,7 +4912,10 @@ def comprimir(entrada, saida, nivel="recommended", log=print, _guard=None,
         log(_etapa("[2] mapeando imagens e DPI efetivo"))
         _CLIPADOS.clear()
         if spec.get("clip", False) and not _sem_risco:
+            _tcl = _time.time()
             _aplica_clip_imagens(pdf, log)
+            if os.environ.get("PDFAGENT_DEBUG_TEMPO"):
+                log("    clip: %.1fs" % (_time.time() - _tcl))
         usos = _tamanhos_na_pagina(pdf)
         total = trocadas = 0
 
@@ -4875,8 +4932,7 @@ def comprimir(entrada, saida, nivel="recommended", log=print, _guard=None,
         _nproc = 0
         if os.environ.get("PDFAGENT_PROC_IMG", "1") != "0" \
                 and not getattr(sys, "frozen", False):
-            _nproc = min(os.cpu_count() or 1,
-                         int(os.environ.get("PDFAGENT_PROC_WORKERS", "24")))
+            _nproc = _workers_processo()
         janela = int(os.environ.get("PDFAGENT_JANELA")
                      or (_nproc if _nproc > 1 else _largura_pool()))
         fila = deque()   # (future, job) na ordem de submissao
@@ -4904,6 +4960,7 @@ def comprimir(entrada, saida, nivel="recommended", log=print, _guard=None,
                 if _aplica_futuro(fut, job):
                     trocadas += 1
 
+        _tlaco = _time.time()
         for pagina in pdf.pages:
             _tp0 = _time.time()
             try:
@@ -4951,6 +5008,7 @@ def comprimir(entrada, saida, nivel="recommended", log=print, _guard=None,
                     if _aplica_futuro(fut, j0):
                         trocadas += 1
         _drena()
+        _TEMPO_IMG["laco"] = _time.time() - _tlaco
         _fecha_pool_proc()
         log(_etapa(f"[3] imagens: {trocadas}/{total} recomprimidas"))
         log("    tempo imagem: paginas %.1fs, prepara %.1fs (decode %.1fs), "
@@ -4960,6 +5018,10 @@ def comprimir(entrada, saida, nivel="recommended", log=print, _guard=None,
                _TEMPO_IMG.get("decode", 0.0), _TEMPO_IMG.get("puro", 0.0),
                _TEMPO_IMG.get("encode", 0.0), _TEMPO_IMG.get("espera", 0.0),
                _TEMPO_IMG.get("aplica", 0.0), _largura_pool(), janela))
+        log("    tempo imagem: laco %.1fs (soma dos contadores %.1fs)"
+            % (_TEMPO_IMG.get("laco", 0.0),
+               _TEMPO_IMG.get("paginas", 0.0) + _TEMPO_IMG.get("prepara", 0.0)
+               + _TEMPO_IMG.get("espera", 0.0) + _TEMPO_IMG.get("aplica", 0.0)))
         if _TEMPO_IMG.get("pickle"):
             log("    tempo imagem: submit/pickle %.1fs (serializa na thread "
                 "principal)" % _TEMPO_IMG["pickle"])

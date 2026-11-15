@@ -81,6 +81,23 @@ python scripts/build_exe.py            # onedir + onefile portátil
   `Source: "..\dist\PDFagent\*"`.
 - PATH aponta para `{app}`; os shims entram junto (tarefa `addpath`).
 
+## 4b. Variáveis de ambiente (diagnóstico e desempenho)
+
+Nenhuma é obrigatória; todas têm default seguro.
+
+| variável | default | para que serve |
+|---|---|---|
+| `PDFAGENT_DEBUG_TEMPO` | desligado | imprime o tempo de cada fase (`[4]`, merge de fontes, clip, DPI, laço de imagens). **Primeira coisa a ligar antes de otimizar** — foi assim que apareceu `_normaliza_conteudo` com 42 s |
+| `PDFAGENT_PROC_IMG` | `1` | `0` volta a fase de imagens para **threads** (a GIL limita a ~2,7×; processo escala mais) |
+| `PDFAGENT_PROC_WORKERS` | `24` | workers dos pools de **processo** (imagens e normalização). Limitado por `os.cpu_count()` |
+| `PDFAGENT_PROC_NORM` | `1` | `0` roda `_normaliza_conteudo` em série (medido: 37,9 s serial × 14,9 s em pool) |
+| `PDFAGENT_JANELA` | = workers de processo | quantas imagens ficam em voo. **Se ficar menor que os workers, o pool fica ocioso** |
+| `PDFAGENT_THREADS` | `8` | threads do pool de fallback (quando processo está desligado) |
+| `PDFAGENT_LOTE_FONTE` | `8` | fontes por tarefa no subset em lote |
+| `COMPRESSPDF_MERGE` | `1` | `0` desliga a fusão de fontes (usado para provar que um bug **não** é regressão dela) |
+| `COMPRESSPDF_SUBSET` | `motor` | `compacto`/`motor`/`ilove`: conjunto de tabelas e `retain_gids` |
+| `COMPRESSPDF_CASAS` | (fixo no código: `_CASAS = 4`) | casas decimais ao reescrever números do content stream. **3 estoura o teto de render** (0,56%) |
+
 ## 5. Orçamento de tamanho (não regredir)
 
 | item | regra |

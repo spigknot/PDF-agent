@@ -628,6 +628,37 @@ Duas correções de fidelidade/velocidade que saíram junto:
   escrita da máscara é a única parte móvel de thread — provado que o teste
   falha se ela for desligada).
 
+### Rodada 12 — 75,6 s: os walks repetidos e o piso da normalização
+
+A soma das fases não fechava com o total (38 s de fase de imagem contra 22 s de
+laço). O que faltava: **`_aplica_clip_imagens` (12,8 s)** e, dentro dele,
+`_coleta_draws` (11,2 s) fazendo um parse **sem filtro de operadores** — o
+quarto walk completo do documento (normaliza, DPI, fontes e clip parseiam tudo
+separadamente).
+
+| mudança | efeito |
+|---|---|
+| ~~`_coleta_draws` com filtro de operadores~~ | **revertido**: 11,2 → 9,0 s, mas quebrou o gate (2/21) |
+| `_tamanhos_na_pagina` instrumentado (parse 1,4 s + rastreio 1,2 s) | não era gargalo |
+| pool de processo derivado de RAM (`_workers_processo`) | segurança em máquina pequena |
+| `PDFAGENT_PROC_NORM=0` para comparar | serial 37,9 s × pool 14,9 s |
+
+**Por que o filtro foi revertido**: `_coleta_draws` guarda `cm_idx`, a POSIÇÃO
+da instrução `cm` no stream, e `_aplica_clip_imagens` reparseia a página **sem**
+filtro para editar exatamente aquela posição. Com o parser filtrado os índices
+desalinham, o clip edita a instrução errada e a paridade estrutural do corpus
+cai para 2/21 — com 0/3 no documento grande, ou seja, o gate pequeno é que
+pegou. Economizar 2,2 s não paga esse risco.
+
+**A normalização tem piso de ~14 s** e não escala de 12 para 24 workers: o
+custo está na serialização dos content streams (20 MB descomprimidos) e no
+próprio `pikepdf.ContentStreamInstruction`, não em CPU. Para descer disso seria
+preciso um parser próprio bytes→bytes — anotado como próximo passo, não feito.
+
+**Render**: a divergência de 0,114% está espalhada em 1.411 pixels por 10 faixas
+da página 339 (0,04–0,26% em cada). É antialiasing de glifo, **não** máscara
+1-bit como se supunha — não há o que "replicar" do motor ali.
+
 ### Rodada 11 — 76,6 s: o gargalo escondido era a normalização de conteúdo
 
 Instrumentando as fases (`PDFAGENT_DEBUG_TEMPO=1`) apareceu o que o perfil
