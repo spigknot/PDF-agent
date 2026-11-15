@@ -746,3 +746,50 @@ níveis com texto dentro do teto.
 só a posição na tabela. Qualquer fusão de programa de fonte tem de comparar o
 **desenho** (ou o caractere), nunca o nome, e reconstruir o cmap por código.
 
+---
+
+### Rodada 9 — content stream (Fase C): não era estrutura, era decimal
+
+O diagnóstico do plano dizia "+127 KB de content stream" e listava `cm` +5.600,
+`Tm` +1.960, `Tf` +146. O histograma por operador (`scripts/diag_conteudo.py`)
+confirmou as contagens — mas a **contagem de `cm` era praticamente a mesma**
+(31.646 nossos × 31.329 do motor) enquanto os *operandos* somavam **542 KB a
+mais**. Ou seja: o motor não remove operador, ele **encurta o número**.
+
+Medido: 38.961 números com **6 casas** em `cm` contra 50 do motor, que usa 1–2
+casas (76.399 com 1 casa, 12.077 com 2). A causa no código era explícita: o
+parser devolve `decimal.Decimal` e `_serializa_obj` **preservava a grafia
+original** com um `if tipo == "Decimal": return s`.
+
+**Mudanças:**
+
+- `_serializa_obj` passa a normalizar todo número por `_fmt_num` (o caso especial
+  `Decimal` saiu);
+- `_fmt_num` usa `_CASAS` (topo do módulo). Com **3** casas o ganho é maior
+  (‑203 KB) mas o render vai a **0,56%** e estoura o teto de 0,5%; com **4**
+  casas o render volta ao piso histórico (**0,11%**) e o ganho é ‑185 KB;
+- `_normaliza_conteudo` ganhou no rastreio de estado `cm`, `Tm`, `cs`, `sc`,
+  `scn`, `SC`, `SCN` (mesma lógica de `Tf`: corta quando repete o valor vigente,
+  respeitando `q`/`Q`/`gs`). Esse corte, sozinho, valia só ~4 KB — o ganho
+  estava mesmo na formatação.
+
+`Tm` é invalidado por `BT`, `Td`, `TD`, `T*`, `'` e `"` para o corte não usar
+matriz de texto velha.
+
+**Resultado** (`processo.pdf`):
+
+| | antes | agora | motor |
+|---|---|---|---|
+| content stream comprimido | 3.538.796 | **3.353.615** | 3.414.674 |
+| total recommended | 11.654.076 | **11.465.205** | 12.227.010 |
+| render | 0,11% | **0,11%** | — |
+
+Gate dos 3 níveis: recommended **93,77%** da referência, extreme **93,27%**, low
+**89,85%**; 0/3 combinações com problema.
+
+**Lição de método**: antes de reescrever operadores, comparar **bytes de
+operandos**, não contagem de operadores. Um `cm` idêntico em número pode custar
+20 bytes a mais e responder por 100+ KB de diferença.
+
+
+

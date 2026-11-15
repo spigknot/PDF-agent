@@ -43,6 +43,10 @@ NIVEIS_VALIDOS = ("extreme", "recommended", "low")
 # divergencia de render. Mantido desligado; a rede de seguranca tambem
 # reverte caso seja ligado.
 _TENTA_CFF = False
+# casas decimais ao reescrever numeros do content stream. O motor grava 1-2
+# (medido: 76.399 numeros com 1 casa em `cm`, contra 38.961 nossos com 6);
+# 3 casas preserva o render medido e corta a maior parte do excesso.
+_CASAS = 4
 
 # Desliga a escolha dupla de kernel (usada pela rede de seguranca)
 _sem_risco_kernel = False
@@ -4237,7 +4241,14 @@ def _recomprime_flate(pdf, log):
 
 
 def _fmt_num(v):
-    """Numero compacto: ate 6 decimais, sem zeros a direita, sem '-0'."""
+
+    """Numero compacto: ate _CASAS decimais, sem zeros a direita, sem '-0'.
+
+    O motor grava as matrizes `cm` com 1-2 casas (medido em processo.pdf: 76.399
+    numeros com 1 casa e 12.077 com 2; nos gravavamos 38.961 com 6). Mesmo
+    numero de operadores `cm` nos dois (31.646 x 31.329), mas 542 KB a mais de
+    operandos — o gap de content stream e' formatacao, nao estrutura.
+    """
     try:
         f = float(v)
     except Exception:
@@ -4245,7 +4256,7 @@ def _fmt_num(v):
     if f == int(f) and abs(f) < 1e16:
         s = str(int(f))
     else:
-        s = f"{f:.6f}".rstrip("0").rstrip(".")
+        s = f"{f:.{_CASAS}f}".rstrip("0").rstrip(".")
     if s in ("-0", ""):
         s = "0"
     return s
@@ -4318,10 +4329,9 @@ def _serializa_obj(o):
         s = str(o)
         if s.startswith("/"):
             return s.encode("latin-1", "replace")
-        # Decimal vindo do parser: preserva a grafia original
-        tipo = type(o).__name__
-        if tipo == "Decimal":
-            return s.encode()
+        # Numeros vem do parser como Decimal: reescrever com _CASAS casas e' o
+        # que fecha o gap de content stream (medido: 38.961 numeros com 6 casas
+        # em `cm` contra 50 do motor, 542 KB so' nos operandos de `cm`).
         try:
             float(s)
             return _fmt_num(s).encode()
@@ -4352,6 +4362,12 @@ def _normaliza_conteudo(pdf, log):
     n_pag = 0
     ganho = 0
 
+    def _canon_cor(o):
+        try:
+            return round(float(o), 6)
+        except Exception:
+            return str(o)
+
     def normaliza(instrucoes):
         saida = []
         identidade = True
@@ -4359,9 +4375,12 @@ def _normaliza_conteudo(pdf, log):
         # e sai do stream (o motor faz isso: medido em processo.pdf, `Tf` 6.451
         # deles contra 14.114 nossos, `M` 35 x 3.389, `j` 1.923 x 3.978).
         # `q` empilha uma copia e `Q` restaura — senao o corte fica errado.
+        # `cm`/`Tm`/cor entram no mesmo rastreio: medido em 22/11, `cm` +5.600,
+        # `Tm` +1.960, `cs`/`sc`/`SCN` +400 contra a referencia.
         PADRAO = {"Tc": 0.0, "Tw": 0.0, "Tz": 100.0, "Ts": 0.0, "Tr": 0.0,
                   "w": 1.0, "J": 0.0, "j": 0.0, "M": 10.0, "Tf": None,
-                  "d": None}
+                  "d": None, "cm": None, "Tm": None, "cs": None, "sc": None,
+                  "scn": None, "SC": None, "SCN": None}
         estado = dict(PADRAO)
         pilha_estado = []
         cur = None          # ponto corrente do path (x, y) para c -> v/y
@@ -4387,6 +4406,12 @@ def _normaliza_conteudo(pdf, log):
                     elif op == "d" and len(operandos) == 2:
                         chave = (tuple(float(x) for x in operandos[0]),
                                  float(operandos[1]))
+                    elif op in ("cm", "Tm") and len(operandos) == 6:
+                        chave = tuple(round(float(x), 6) for x in operandos)
+                    elif op == "cs" and len(operandos) == 1:
+                        chave = str(operandos[0])
+                    elif op in ("sc", "scn", "SC", "SCN"):
+                        chave = tuple(_canon_cor(o) for o in operandos)
                     elif len(operandos) == 1:
                         chave = float(operandos[0])
                 except Exception:
@@ -4444,8 +4469,10 @@ def _normaliza_conteudo(pdf, log):
 
             if op == "BT":
                 identidade = True
+                estado["Tm"] = None
             elif op in ("Td", "TD", "T*", "'", '"'):
                 identidade = False
+                estado["Tm"] = None
             elif op == "Tm":
                 vals = None
                 try:
@@ -4461,6 +4488,7 @@ def _normaliza_conteudo(pdf, log):
                     saida.append(pikepdf.ContentStreamInstruction(
                         novo, pikepdf.Operator("Td")))
                     identidade = False
+                    estado["Tm"] = None
                     continue
                 identidade = False
             saida.append(pikepdf.ContentStreamInstruction(operandos, operador))
