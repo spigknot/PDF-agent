@@ -3383,6 +3383,7 @@ def _merge_subset_fontes(pdf, log):
     except ImportError:
         return 0
 
+    _tc = _time.perf_counter()
     membros = []          # dicts com o necessario para subsetar/compartilhar
     vistos = set()
 
@@ -3455,6 +3456,9 @@ def _merge_subset_fontes(pdf, log):
             membros.append(m)
     if not membros:
         return 0
+    _t0 = _time.perf_counter()
+    if os.environ.get("PDFAGENT_DEBUG_TEMPO"):
+        log("    merge fontes: coleta (%d copias) %.1f s" % (len(membros), _t0 - _tc))
 
     def _base_norm(fo):
         base = str(fo.get("/BaseFont", "")).lstrip("/")
@@ -3681,6 +3685,10 @@ def _merge_subset_fontes(pdf, log):
                 % (_chave[1][:22], _chave[0], len(do_grupo), len(carregados)))
     if not plano:
         return 0
+    _t1 = _time.perf_counter()
+    if os.environ.get("PDFAGENT_DEBUG_TEMPO"):
+        log("    merge fontes: fase 1 (mapear %d copias) %.1f s"
+            % (len(membros), _t1 - _t0))
 
     # --- fase 2: subset ---
     # Com 1 tarefa por grupo (164) o pickle dominava e nao havia ganho. Agora
@@ -3710,6 +3718,11 @@ def _merge_subset_fontes(pdf, log):
             resultados = None
     if resultados is None:
         resultados = [_subset_programa(p[2]) for p in plano]
+
+    _t2 = _time.perf_counter()
+    if os.environ.get("PDFAGENT_DEBUG_TEMPO"):
+        log("    merge fontes: fase 2 (subset %d grupos) %.1f s"
+            % (len(plano), _t2 - _t1))
 
     # --- fase 3: aplicar no PDF (processo principal) ---
     tag = _tag_subset(pdf)
@@ -3764,6 +3777,9 @@ def _merge_subset_fontes(pdf, log):
         except Exception as ex:
             log("    merge fonte: %s" % ex)
             continue
+    if os.environ.get("PDFAGENT_DEBUG_TEMPO"):
+        log("    merge fontes: fase 3 (aplicar) %.1f s"
+            % (_time.perf_counter() - _t2))
     if processados:
         log("    fontes: %d copia(s) -> %d programa(s), %d fonte(s) reapontada(s)"
             % (len(membros), len(plano), processados))
@@ -4917,10 +4933,18 @@ def comprimir(entrada, saida, nivel="recommended", log=print, _guard=None,
         _aplica_strip(pdf, spec["strip"], log)
         if "structtree" in spec["strip"]:
             _remove_marcadores_mc(pdf, log)
+        if os.environ.get("PDFAGENT_DEBUG_TEMPO"):
+            log(_etapa("    strip ok"))
         _normaliza_conteudo(pdf, log)
+        if os.environ.get("PDFAGENT_DEBUG_TEMPO"):
+            log(_etapa("    normaliza conteudo ok"))
         _unifica_conteudo(pdf, log)
+        if os.environ.get("PDFAGENT_DEBUG_TEMPO"):
+            log(_etapa("    unifica conteudo ok"))
         if spec.get("remove_fontes_padrao"):
             _substitui_fontes_padrao(pdf, log)
+            if os.environ.get("PDFAGENT_DEBUG_TEMPO"):
+                log(_etapa("    fontes padrao ok"))
         if spec.get("subset_fontes", True):
             feitos = 0
             try:
