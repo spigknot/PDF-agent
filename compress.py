@@ -3513,7 +3513,7 @@ def _merge_subset_fontes(pdf, log):
                     u = tab.get(c) if tab else None
                 if u is None:
                     u = 0xF000 + int(c)
-                out[c] = (nm, int(u), _assinatura(tt, nm))
+                out[c] = (nm, int(u))
             return out
         out = {}
         mp = m["mapa"] or b""
@@ -3525,7 +3525,7 @@ def _merge_subset_fontes(pdf, log):
             else:
                 return None
             if 0 < g < len(ordem):
-                out[cid] = (ordem[g], None, _assinatura(tt, ordem[g]))
+                out[cid] = (ordem[g], None)
             else:
                 return None
         return out
@@ -3546,16 +3546,28 @@ def _merge_subset_fontes(pdf, log):
         grupos.setdefault((m["tipo"], _base_norm(m["fo"]), _cidinfo(m)),
                           []).append(m)
 
-    def _conflita(mapa, membros_g):
-        """Mesmo codigo com caractere ou DESENHO diferente impede a fusao."""
-        for _m, _tt, mc in membros_g:
-            for cod, (nome, u, ass) in mapa.items():
-                outro = mc.get(cod)
+    def _conflita(item, membros_g):
+        """Mesmo codigo com caractere ou DESENHO diferente impede a fusao.
+
+        A assinatura do desenho (caro: expande contornos) so' e' calculada
+        quando os programas NAO sao byte-identicos e o codigo aparece nos dois
+        lados — antes ela rodava para todo codigo de toda copia e respondia por
+        boa parte dos 56 s da etapa de fontes.
+        """
+        m, tt, mapa = item
+        for pm, ptt, pmapa in membros_g:
+            mesmo_prog = m.get("crc") == pm.get("crc")
+            for cod, (nome, u) in mapa.items():
+                outro = pmapa.get(cod)
                 if outro is None:
                     continue
                 if outro[1] is not None and u is not None and outro[1] != u:
                     return True
-                if outro[2] is not None and ass is not None and outro[2] != ass:
+                if mesmo_prog and outro[0] == nome:
+                    continue
+                a = _assinatura(tt, nome)
+                b = _assinatura(ptt, outro[0])
+                if a is not None and b is not None and a != b:
                     return True
         return False
 
@@ -3571,6 +3583,7 @@ def _merge_subset_fontes(pdf, log):
                 continue              # CFF/Type1 ou tabela corrompida: fica fora
             if not mapa:
                 continue
+            m["crc"] = zlib.crc32(m["raw"])
             carregados.append((m, tt, mapa))
         if not carregados:
             continue
@@ -3588,15 +3601,21 @@ def _merge_subset_fontes(pdf, log):
                     # no canonico com o mesmo DESENHO — assim o GID nao muda e
                     # nao ha' remapeamento (era o que trocava a pagina 210:
                     # 194 CIDs ficavam sem glifo no mapa reescrito).
-                    item[0]["_cid_ok"] = all(
-                        cod in canon_mapa and canon_mapa[cod][2] is not None
-                        and canon_mapa[cod][2] == ass
-                        for cod, (_n, _u, ass) in item[2].items())
+                    if item[0].get("crc") == canon_m.get("crc"):
+                        item[0]["_cid_ok"] = all(cod in canon_mapa
+                                                 for cod in item[2])
+                    else:
+                        item[0]["_cid_ok"] = all(
+                            cod in canon_mapa
+                            and _assinatura(item[1], _n) is not None
+                            and _assinatura(item[1], _n)
+                            == _assinatura(canon_tt, canon_mapa[cod][0])
+                            for cod, (_n, _u) in item[2].items())
                     if not item[0]["_cid_ok"]:
                         resto.append(item)
                         continue
                     membros_g.append(item)
-                elif _conflita(item[2], membros_g):
+                elif _conflita(item, membros_g):
                     resto.append(item)
                 else:
                     membros_g.append(item)
@@ -3607,7 +3626,7 @@ def _merge_subset_fontes(pdf, log):
             for idx, (m, tt, mapa) in enumerate(membros_g):
                 pares = []
                 nome2final = {}
-                for cod, (nome, _u, _ass) in mapa.items():
+                for cod, (nome, _u) in mapa.items():
                     if int(cod) in cod2final:
                         continue
                     if idx == 0:

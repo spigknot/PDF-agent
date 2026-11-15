@@ -628,6 +628,36 @@ Duas correções de fidelidade/velocidade que saíram junto:
   escrita da máscara é a única parte móvel de thread — provado que o teste
   falha se ela for desligada).
 
+### Rodada 10 — fechamento do plano de velocidade (101 s; a GIL é o teto)
+
+Perfil final do `recommended` em `processo.pdf` (36 CPUs, `PDFAGENT_THREADS=8`):
+
+| bloco | baseline | agora |
+|---|---|---|
+| `[3]` imagens (fase inteira) | 82,0 s | **40,4 s** |
+| subset de fontes | 52,5 s | **50,2 s** |
+| `[5]` save | 8,0 s | **3,7 s** |
+| **total** | **146,5 s** | **101,1 s** (‑31%) |
+
+O ganho desta rodada veio de **parar de calcular o que não muda a decisão**: a
+assinatura do desenho de um glifo (`_assinatura`, que expande contornos) era
+calculada para TODO código de TODA cópia ao fundir fontes — 240 fontes ×
+dezenas de glifos. Agora ela só roda quando os programas **não** são
+byte-idênticos e o mesmo código aparece nos dois lados: fontes 56,1 → 50,2 s e
+o total 109,6 → 101,1 s. A saída varia ±286 B (0,0025%, dentro da tolerância do
+plano; render 0,114% e texto 0/376 iguais).
+
+**Fase 5 do plano (Pillow SIMD): nada a fazer.** `Pillow 12.1.1` já vem com
+`libjpeg-turbo` (`features.check("libjpeg_turbo") == True`) e `zlib-ng`; o
+`pillow-simd` está arquivado e não tem wheel para cp311.
+
+**Meta de 70-80 s não atingida — e o motivo está medido**: com 8 threads o pool
+fica ocupado só 24,3 s para 66,9 s de trabalho serial (2,7x) e o job mediano é
+0,03 s (glue de Python domina); com 16 threads a fase piora (42,3 s). O teto é
+a **GIL**, não o número de núcleos: o próximo salto exige processo de verdade
+(passar bytes + parâmetros ao worker, sem `pikepdf`), o que é redesenho — não
+ajuste. Registrado como próximo passo, fora deste plano.
+
 ### Rodada 7 — JBIG2, e o bug de render que ele desenterrou
 
 **JBIG2 (encoder de terceiro)**: `tenta_jbig2` existia desde sempre e nunca
