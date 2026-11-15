@@ -96,7 +96,7 @@ Nenhuma é obrigatória; todas têm default seguro.
 | `PDFAGENT_LOTE_FONTE` | `8` | fontes por tarefa no subset em lote |
 | `COMPRESSPDF_MERGE` | `1` | `0` desliga a fusão de fontes (usado para provar que um bug **não** é regressão dela) |
 | `COMPRESSPDF_SUBSET` | `motor` | `compacto`/`motor`/`ilove`: conjunto de tabelas e `retain_gids` |
-| `COMPRESSPDF_CASAS` | (fixo no código: `_CASAS = 4`) | casas decimais ao reescrever números do content stream. **3 estoura o teto de render** (0,56%) |
+| `COMPRESSPDF_CASAS` | `4` | casas decimais ao reescrever números do content stream. Medido: **3 estoura o teto de render** (0,56%); **4** = 11.464.919 B e AA 0,325%; **6** = 11.486.541 B e AA 0,311% (custo de 21,6 KB para 0,014 pp) |
 
 ## 5. Orçamento de tamanho (não regredir)
 

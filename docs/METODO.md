@@ -628,6 +628,35 @@ Duas correções de fidelidade/velocidade que saíram junto:
   escrita da máscara é a única parte móvel de thread — provado que o teste
   falha se ela for desligada).
 
+### Rodada 13 — fidelidade medida no documento inteiro (e o gate corrigido)
+
+O gate de render comparava **10 páginas fixas contra o arquivo do motor**. Duas
+descobertas ao varrer as 376 páginas contra o **original**:
+
+1. **O gate punia a nossa fidelidade.** Em 22 páginas ficamos >0,5% longe do
+   motor — e em **todas** as 22 estamos mais perto do original que ele:
+
+   | página | nosso vs original | motor vs original |
+   |---|---|---|
+   | 44 | **0,05%** | 5,23% |
+   | 82 | **0,48%** | 5,19% |
+   | 218 | **9,60%** | 12,76% |
+   | 117 | **4,61%** | 6,14% |
+
+   Comparar com o motor media "parecido com o iLovePDF", não "fiel ao
+   original". O critério agora é o original, nas **376 páginas**, com teto por
+   nível (média e pior): recommended 0,37%/10,5%, extreme 0,80%/18%, low
+   0,45%/2%.
+
+2. **A diferença de AA contra o baseline não é da fusão de fontes.** Medido
+   com `COMPRESSPDF_MERGE=0`: 0,3225% (sem) × 0,3248% (com) — 0,0023 pp. O
+   resto vem do arredondamento numérico: `COMPRESSPDF_CASAS=6` dá 0,3105%
+   (o baseline era 0,3082%), custando +21,6 KB. Com 4 casas: 11.464.919 B e
+   0,3248%.
+
+**Placar de fidelidade** (recommended, 376 páginas): texto **0/376**; render
+média **0,3248%**, pior **9,60% (pg218)** — onde o motor está em 12,76%.
+
 ### Rodada 12 — 75,6 s: os walks repetidos e o piso da normalização
 
 A soma das fases não fechava com o total (38 s de fase de imagem contra 22 s de

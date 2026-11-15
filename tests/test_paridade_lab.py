@@ -34,10 +34,16 @@ LIMITE = {"recommended": 1.000, "extreme": 1.015, "low": 0.990}
 # pagina NOVA divergindo reprova, mesmo dentro do teto.
 TEXTO_MAX = {"recommended": 0, "extreme": 3, "low": 0}
 TEXTO_CONHECIDO = {"recommended": set(), "extreme": {180, 210, 222}, "low": set()}
-# fracao maxima de pixels diferentes contra a referencia (medido: 0.00114)
-RENDER_MAX = 0.005
-# paginas comparadas no render (as que ja divergiram em 14/11 + amostra)
-PAGINAS = (0, 21, 50, 120, 148, 209, 300, 337, 338, 375)
+# Render: compara com o ORIGINAL, nao com a referencia do motor. Medido em
+# 22/11: nas 22 paginas onde nos afastamos >0,5% do motor, somos MAIS fieis ao
+# original em TODAS (pg44: 0,05% nosso x 5,23% dele; pg218: 9,60% x 12,76%) —
+# comparar com o motor punia a nossa fidelidade. E as 10 paginas fixas que
+# existiam aqui escondiam a pg218: agora sao as 376.
+# Tetos por nivel (medidos em 22/11, com margem ~10%). O extreme comprime
+# imagem mais forte e a pg218 (imagem de fundo) re-renderiza inteira: 16,5%.
+RENDER_MEDIA_MAX = {"recommended": 0.0037, "extreme": 0.0080, "low": 0.0045}
+RENDER_PIOR_MAX = {"recommended": 0.105, "extreme": 0.180, "low": 0.020}
+PAGINAS = None                 # None = todas as paginas
 
 
 def _texto(caminho):
@@ -49,13 +55,18 @@ def _texto(caminho):
         d.close()
 
 
-def _render_pior(a, b, paginas=PAGINAS):
+def _render_stats(a, b, paginas=PAGINAS):
+    """(media, pior, pagina_do_pior) da fracao de pixels diferentes."""
     import fitz
     import numpy as np
     da, db = fitz.open(a), fitz.open(b)
     pior = 0.0
+    pior_pg = 0
+    soma = 0.0
+    n = 0
     try:
-        for i in paginas:
+        alvo = range(min(len(da), len(db))) if paginas is None else paginas
+        for i in alvo:
             if i >= len(da) or i >= len(db):
                 continue
             pa, pb = da[i].get_pixmap(dpi=80), db[i].get_pixmap(dpi=80)
@@ -64,14 +75,17 @@ def _render_pior(a, b, paginas=PAGINAS):
             nb = np.frombuffer(pb.samples, dtype=np.uint8).reshape(
                 pb.height, pb.width, pb.n)
             if na.shape != nb.shape:
-                return 1.0
+                return 1.0, 1.0, i + 1
             dif = np.abs(na.astype("int16") - nb.astype("int16")).max(axis=2)
             frac = float((dif > 24).sum()) / (na.shape[0] * na.shape[1])
-            pior = max(pior, frac)
+            soma += frac
+            n += 1
+            if frac > pior:
+                pior, pior_pg = frac, i + 1
     finally:
         da.close()
         db.close()
-    return pior
+    return (soma / n if n else 0.0), pior, pior_pg
 
 
 def main(argv):
@@ -99,7 +113,7 @@ def main(argv):
         texto = _texto(saida)
         pag_texto = [i for i in range(min(len(texto), len(texto_orig)))
                      if texto[i] != texto_orig[i]]
-        pior = _render_pior(saida, ref)
+        media, pior, pior_pg = _render_stats(saida, ORIG, PAGINAS)
 
         problemas = []
         if razao > LIMITE[nivel]:
@@ -113,12 +127,18 @@ def main(argv):
         if novas:
             problemas.append("texto divergiu em pagina(s) nova(s): %s"
                              % sorted(novas)[:6])
-        if pior > RENDER_MAX:
-            problemas.append("render %.4f > %.3f" % (pior, RENDER_MAX))
+        if media > RENDER_MEDIA_MAX[nivel]:
+            problemas.append("render medio %.4f > %.4f"
+                             % (media, RENDER_MEDIA_MAX[nivel]))
+        if pior > RENDER_PIOR_MAX[nivel]:
+            problemas.append("render pior %.4f > %.3f (pg %d)"
+                             % (pior, RENDER_PIOR_MAX[nivel], pior_pg))
 
         if calibrar:
-            print("  %-12s %d B (%.4f da ref) | texto!=orig %d | render %.4f%%"
-                  % (nivel, r["depois"], razao, len(pag_texto), 100 * pior))
+            print("  %-12s %d B (%.4f da ref) | texto!=orig %d | "
+                  "render medio %.3f%% pior %.2f%% (pg %d)"
+                  % (nivel, r["depois"], razao, len(pag_texto),
+                     100 * media, 100 * pior, pior_pg))
             continue
         if problemas:
             falhas += 1

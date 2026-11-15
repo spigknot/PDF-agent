@@ -46,7 +46,7 @@ _TENTA_CFF = False
 # casas decimais ao reescrever numeros do content stream. O motor grava 1-2
 # (medido: 76.399 numeros com 1 casa em `cm`, contra 38.961 nossos com 6);
 # 3 casas preserva o render medido e corta a maior parte do excesso.
-_CASAS = 4
+_CASAS = int(os.environ.get("COMPRESSPDF_CASAS", "4"))
 
 # Desliga a escolha dupla de kernel (usada pela rede de seguranca)
 _sem_risco_kernel = False
