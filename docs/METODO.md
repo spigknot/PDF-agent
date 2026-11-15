@@ -433,12 +433,15 @@ do lado dele, compensados por 411 KB a menos em imagens).
 | low | **15.910.221 B** | 16.565.289 B | **−655.068 (−3,95%)** |
 
 Render vs a referencia de cada nivel: pior caso 0,114% (pg338, mascar 1-bit).
-Texto: recommended 0/376; low 4/376 e extreme 7/376 (pg 148-151, 179, 209, 221)
-— **bug conhecido**: nessas paginas um Type3 aparece no `rawdict` do MuPDF com
-nome de fonte VAZIO e os codigos saem como ` ...` ("fls. 1" vira lixo).
-O dicionario do Type3 (Encoding/Differences/CharProcs) e' identico ao original
-e a' referencia; falta achar quem deixa a fonte irresolvivel no content stream.
-Nao afeta render (0,114% igual aos outros niveis).
+Texto: recommended 0/376, low 0/376 e extreme 3/376 (pgs **180, 210 e 222**) —
+bug conhecido e **nao regressivo**: medido em 22/11 rodando o extreme com a
+fusao de fontes desligada (`COMPRESSPDF_MERGE=0`), as MESMAS 3 paginas divergem
+do mesmo jeito. Causa: o MuPDF nao resolve o glifo do "i" acentuado do Calibri
+(GID 304) — **o proprio original extrai U+FFFD ali** — e o NBSP (`\xa0`) sai como
+espaco. Nao afeta render (0,114% igual aos outros niveis).
+Vacina: `tests/test_paridade_lab.py` tem a lista explicita das paginas aceitas
+(`TEXTO_CONHECIDO`); qualquer pagina NOVA divergindo reprova, mesmo dentro do
+teto de 3.
 
 Achados desta rodada (14/11):
 

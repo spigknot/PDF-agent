@@ -27,9 +27,13 @@ REFS = {
 # (0,990 / 1,004 / 0,950): qualquer regressao acima disso reprova.
 LIMITE = {"recommended": 1.000, "extreme": 1.015, "low": 0.990}
 # paginas com texto divergente ACEITAS (bug conhecido, documentado em
-# docs/METODO.md §5: 3 paginas do extreme trocam um acento e espaco de fim de
-# linha). Qualquer pagina NOVA divergindo reprova.
+# docs/METODO.md §5). Medido em 22/11 com a fusao de fontes DESLIGADA: as mesmas
+# 3 paginas divergem do mesmo jeito, entao NAO e' regressao da fusao — e' o
+# extrator do MuPDF (o original tambem extrai U+FFFD no "i" acentuado do
+# Calibri, GID 304) e o NBSP virando espaco. A lista e' explicita: qualquer
+# pagina NOVA divergindo reprova, mesmo dentro do teto.
 TEXTO_MAX = {"recommended": 0, "extreme": 3, "low": 0}
+TEXTO_CONHECIDO = {"recommended": set(), "extreme": {180, 210, 222}, "low": set()}
 # fracao maxima de pixels diferentes contra a referencia (medido: 0.00114)
 RENDER_MAX = 0.005
 # paginas comparadas no render (as que ja divergiram em 14/11 + amostra)
@@ -105,6 +109,10 @@ def main(argv):
         if len(pag_texto) > TEXTO_MAX[nivel]:
             problemas.append("texto: %d pagina(s) > teto %d (%s)"
                              % (len(pag_texto), TEXTO_MAX[nivel], pag_texto[:6]))
+        novas = set(i + 1 for i in pag_texto) - TEXTO_CONHECIDO[nivel]
+        if novas:
+            problemas.append("texto divergiu em pagina(s) nova(s): %s"
+                             % sorted(novas)[:6])
         if pior > RENDER_MAX:
             problemas.append("render %.4f > %.3f" % (pior, RENDER_MAX))
 
