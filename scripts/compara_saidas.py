@@ -26,7 +26,11 @@ def censo(cam):
         try:
             tp = str(o.get("/Type", ""))
             sub = str(o.get("/Subtype", ""))
-            eh_meta = (sub == "/XML" or tp in ("/ObjStm", "/Metadata"))
+            # /XRef: stream de cross-reference que carrega /Info (datas) e /ID
+            # no proprio dicionario — o comprimento dele varia 1-2 bytes a cada
+            # execucao por causa disso. Sem classificar como metadado, o gate
+            # acusava "diferenca estrutural" onde so' havia timestamp.
+            eh_meta = (sub == "/XML" or tp in ("/ObjStm", "/Metadata", "/XRef"))
         except Exception:
             tp, sub = "", ""
         if isinstance(o, pikepdf.Stream):

@@ -581,3 +581,46 @@ imagem tem 1-2 candidatos. Para usar os 36 núcleos é preciso o **pipeline por
 imagem**: decodificar na thread principal (1,5 s total), mandar
 resize/convert/encoders para o pool em janelas e aplicar em série. Estimativa:
 70 s → ~15 s, total ~75 s.
+
+### Rodada 6 — pipeline por imagem (o que a medição mostrou)
+
+O pipeline foi feito: `_recomprime_imagem` virou três fases —
+`_prepara_job` (thread principal: early-returns, DPI, decode), `_processa_job`
+(thread: resize, kernel, cor, encoders — devolve **dados + `meta`** em vez de
+closures) e `_aplica_job` (thread principal: `/SMask` e candidato vencedor).
+O laço de `comprimir` mantém uma janela de K imagens (`PDFAGENT_JANELA`,
+default = nº de threads): prepara, submete e aplica na ordem de preparo.
+
+| bloco | antes | agora |
+|---|---|---|
+| `[3]` imagens (fase inteira) | 82,0 s | **40,1–40,7 s** |
+| — `_tamanhos_na_pagina` (mapa de DPI, fixo) | 16,0 s | 16,0 s |
+| — trabalho de imagem de verdade | **59 s** | **24 s** |
+| subset de fontes | 52,5 s | 47,1 s |
+| **total** | **136,2 s** | **102,4 s** (100,9–102,4 em 3 rodadas) |
+
+**O teto é a GIL, não o número de threads.** Com `PDFAGENT_THREADS=8` o pool
+fica ocupado 23,8–24,1 s para 63 s de trabalho serial (2,6x); com 16 threads a
+fase faz 42,3 s (pior). Ocupação média de só 1,6 job simultâneo, apesar
+de 8 workers e pico de 8 concorrentes. Micro-banco com a mesma imagem em 32
+jobs escala 8,7x em 8 threads; no corpus real, o job mediano é 0,03 s (glue de
+Python domina) e os grandes são poucos. Conclusão: mais threads não resolve;
+o próximo salto exige **processos** (passar bytes+parâmetros, não `pikepdf`).
+
+Duas correções de fidelidade/velocidade que saíram junto:
+
+- **Memo por job**: `_custo_variante` já codifica a variante vencedora para
+  comparar, e `tenta_jpeg`/`tenta_flate` recodificavam o MESMO objeto (3 JPEG +
+  3 zlib por imagem reamostrada). O cache é (tag, `id`), guardando a imagem
+  junto — o `id` não recicla dentro do job. Mesma saída, −6,8 s na fase.
+- **Objeto repetido** (32 dos 503 no corpus): a janela é esvaziada antes de
+  re-preparar um `objgen` já em voo, para a 2ª ocorrência decodificar o estado
+  já aplicado — a semântica da versão em série, mesmo que uma etapa futura
+  deixe de ser idempotente.
+- `scripts/compara_saidas.py` passou a classificar `/Type /XRef` como metadado:
+  o stream de cross-reference carrega `/Info` (datas) e `/ID`, então varia 1-2 B
+  por execução e o gate acusava "diferença estrutural" onde só havia timestamp.
+- `tests/test_pipeline_imagens.py`: janela=4 tem de produzir os mesmos bytes que
+  janela=1, e a `/SMask` tem de ter o tamanho da mãe depois do pipeline (a
+  escrita da máscara é a única parte móvel de thread — provado que o teste
+  falha se ela for desligada).

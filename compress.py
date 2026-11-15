@@ -15,6 +15,7 @@ import os
 import re
 import struct
 import sys
+import time as _time
 import zlib
 from collections import defaultdict
 
@@ -1019,11 +1020,12 @@ def _e_cinza(img):
         return False
 
 
-def _flate_menor(img):
+def _flate_menor(img, cru=None):
     """Menor representacao Flate: PNG+predictor12 vs zlib cru.
 
     Para imagens pequenas o predictor acrescenta 1 byte por linha e pode
     piorar; o motor original grava SMask sem predictor (819 B vs 2.088 B).
+    `cru` evita recomprimir o mesmo buffer quando o chamador ja' tem o zlib.
     Retorna (dados, usar_predictor).
     """
     try:
@@ -1031,7 +1033,7 @@ def _flate_menor(img):
     except Exception:
         com_pred = None
     try:
-        sem_pred = zlib.compress(img.tobytes(), 9)
+        sem_pred = cru if cru is not None else zlib.compress(img.tobytes(), 9)
     except Exception:
         sem_pred = None
     opcoes = [(d, True) for d in [com_pred] if d] + [(d, False) for d in [sem_pred] if d]
@@ -1076,25 +1078,28 @@ def _kernel_foto():
     return Image.BILINEAR
 
 
-def _recomprime_imagem(pdf, obj, spec, usos, log):
-    """Aplica downsampling + tenta as compressoes da mascara.
+def _prepara_job(pdf, obj, spec, usos, log):
+    """Fase pikepdf (thread principal): decide, mede e DECODIFICA a imagem.
 
-    Regra do original (ForceRecompression=False): so troca se ficar menor.
-    Retorna (trocou, filtro_final, dpi_final).
+    Devolve um dicionario de job. `pronto=True` significa que nao ha trabalho
+    puro pendente: early-returns (mask/smask/metadados ilegiveis/decode falhou)
+    ou o caso degenerado 1x1, que ja escreveu no objeto. Nos demais casos o job
+    leva a PIL decodificada e `_processa_job` faz o resto numa thread — separar
+    as duas coisas e' o que permite ter K imagens codificando em paralelo.
     """
     try:
         if obj.get("/ImageMask") is True:
-            return False, "mask", None
+            return {"pronto": True, "trocou": False, "rotulo": "mask", "dpi": None}
         if obj.get("/SMask") is not None and int(obj.get("/BitsPerComponent", 8)) == 1:
-            return False, "smask", None
+            return {"pronto": True, "trocou": False, "rotulo": "smask", "dpi": None}
     except Exception:
-        return False, "?", None
+        return {"pronto": True, "trocou": False, "rotulo": "?", "dpi": None}
     try:
         w = int(obj["/Width"])
         h = int(obj["/Height"])
         bpc = int(obj.get("/BitsPerComponent", 8))
     except Exception:
-        return False, "?", None
+        return {"pronto": True, "trocou": False, "rotulo": "?", "dpi": None}
     try:
         cs = obj.get("/ColorSpace")
         cs_nome = str(cs[0]) if isinstance(cs, pikepdf.Array) else str(cs)
@@ -1103,15 +1108,20 @@ def _recomprime_imagem(pdf, obj, spec, usos, log):
     indexada = cs_nome == "/Indexed"
     bitonal = (bpc == 1 and not indexada)
 
-    import time as _t
-    _t_dec = _t.time()
+    _t_dec = _time.time()
     try:
         img = _pil_da_imagem(obj)
     except Exception as ex:
         log(f"    imagem {w}x{h}: decode falhou ({ex}); mantida")
-        return False, "decode-falha", None
+        return {"pronto": True, "trocou": False, "rotulo": "decode-falha", "dpi": None}
     finally:
-        _TEMPO_IMG["decode"] += _t.time() - _t_dec
+        _TEMPO_IMG["decode"] = (_TEMPO_IMG.get("decode", 0.0)
+                                + _time.time() - _t_dec)
+
+    # Decodificacao CRUA: `_custo_variante` compara os kernels a partir dela.
+    # (Antes ele redecodificava o objeto dentro do laco; decodificar aqui UMA
+    #  vez e' o que torna o trabalho puro possivel.)
+    img0 = img
 
     # --- conversao de cor (Extreme: tudo vira RGB) ---
     if spec["conversao_cor"] == "rgb" and img.mode == "CMYK":
@@ -1146,7 +1156,8 @@ def _recomprime_imagem(pdf, obj, spec, usos, log):
                     obj[Name("/Height")] = 1
                     obj[Name("/ColorSpace")] = Name("/DeviceGray")
                     obj[Name("/BitsPerComponent")] = 8
-                    return True, "1x1", dpi
+                    return {"pronto": True, "trocou": True, "rotulo": "1x1",
+                            "dpi": dpi}
                 except Exception as ex:
                     log(f"    1x1 falhou: {ex}")
             # Corte empirico ajustado nas amostras reais: o motor nao
@@ -1159,6 +1170,8 @@ def _recomprime_imagem(pdf, obj, spec, usos, log):
                 # O motor guarda o dpi efetivo em float32 e calcula o alvo
                 # como px*res/dpi (fórmula de FUN_1800a6720). Reproduzir o
                 # float32 acerta os ±1 px que sobravam (GM9477 pg1: 241x160).
+                clipado = getattr(obj, "objgen", None) in _CLIPADOS
+
                 def _alvo(px, pt):
                     if not pt:
                         return px
@@ -1169,7 +1182,7 @@ def _recomprime_imagem(pdf, obj, spec, usos, log):
                     # imagem recortada pelo nosso ClipImages: o motor nao
                     # perde a ultima linha, entao arredonda para cima
                     # (NS8002 /Im40: 314.14 -> 315, como na referencia).
-                    if getattr(obj, "objgen", None) in _CLIPADOS:
+                    if clipado:
                         return max(1, int(math.ceil(v - 1e-9)))
                     return max(1, int(v + 0.5))
                 alvo_w = min(_alvo(w, drawn_w), w)
@@ -1184,7 +1197,73 @@ def _recomprime_imagem(pdf, obj, spec, usos, log):
                            obj.get("/Width"), obj.get("/Height"),
                            usos.get(getattr(obj, "objgen", None), "SEM-CHAVE"),
                            tam, alvo_w, alvo_h))
-    if (alvo_w, alvo_h) != (w, h):
+
+    reamostra = (alvo_w, alvo_h) != (w, h)
+    m_obj = m_raw = None
+    if reamostra and tem_smask and not bitonal:
+        # A mascara acompanha o resize (preserva transparencia, como o motor).
+        try:
+            m_obj = obj["/SMask"]
+        except Exception:
+            m_obj = None
+        if m_obj is not None:
+            try:
+                m_raw = pikepdf.PdfImage(m_obj).as_pil_image()
+            except Exception as ex:
+                log(f"    smask nao reamostrada: {ex}")
+    try:
+        orig_len = len(obj.read_raw_bytes())
+    except Exception:
+        orig_len = None
+
+    return {"pronto": False, "obj": obj, "objgen": getattr(obj, "objgen", None),
+            "spec": spec, "img": img, "img0": img0, "w": w, "h": h,
+            "bitonal": bitonal, "indexada": indexada,
+            "alvo": (alvo_w, alvo_h), "reamostra": reamostra,
+            "tem_smask": tem_smask, "m_obj": m_obj, "m_raw": m_raw,
+            "orig_len": orig_len, "dpi": dpi_final}
+
+
+def _processa_job(job):
+    """Fase PURA (roda no pool): resize, conversao de cor e encoders.
+
+    Nao toca no PDF: devolve os bytes do candidato vencedor e o `meta` que a
+    thread principal escreve com `_aplica_candidato`. Devolver dados em vez de
+    closures e' o que permite paralelizar IMAGENS (antes so os 1-2 encoders de
+    uma mesma imagem rodavam em paralelo — em extreme/low, so um).
+    """
+    spec = job["spec"]
+    img = job["img"]
+    img0 = job["img0"]
+    w, h = job["w"], job["h"]
+    bitonal, indexada = job["bitonal"], job["indexada"]
+    alvo_w, alvo_h = job["alvo"]
+    avisos = []
+    smask = None
+    achatar = False
+
+    # Memo por job: `_custo_variante` ja' codifica a variante vencedora para
+    # compara-la, e `tenta_jpeg`/`tenta_flate` codificavam o MESMO objeto de
+    # novo (3 JPEG + 3 zlib por imagem reamostrada). Guardar (imagem, bytes)
+    # mantem a imagem viva, entao o id() nao e' reciclado dentro do job.
+    cache = {}
+
+    def _memo(tag, im, fn):
+        chave = (tag, id(im))
+        hit = cache.get(chave)
+        if hit is not None and hit[0] is im:
+            return hit[1]
+        valor = fn(im)
+        cache[chave] = (im, valor)
+        return valor
+
+    def _jpeg_memo(im):
+        return _memo("j", im, lambda i: _jpeg_bytes(i, spec["qualidade"]))
+
+    def _flate_memo(im):
+        return _memo("f", im, _flate_bytes)
+
+    if job["reamostra"]:
         if bitonal:
             # 1-bit: NEAREST preserva bordas duras (LANCZOS gera franja
             # cinza que vira speckle no G4 — 12x maior)
@@ -1202,77 +1281,61 @@ def _recomprime_imagem(pdf, obj, spec, usos, log):
             #  EM3120 pg3: BILINEAR suaviza o ruido e o JPEG fica menor.)
             if not _sem_risco_kernel:
                 try:
-                    base = _pil_da_imagem(obj)
+                    base = img0
                     if base.mode not in ("RGB", "L", "CMYK"):
                         base = base.convert("RGB")
                     alt = base.resize((alvo_w, alvo_h), Image.BILINEAR)
                     if alt.mode == img.mode:
+                        # so conta o que o PERFIL permite: em extreme/low
+                        # o mascara e' apenas ["jpeg"]; incluir Flate aqui
+                        # fazia o NEAREST ganhar e o JPEG final ficar
+                        # grande (EM3120 pg3 mantinha o original).
+                        permitidos = (spec["bitonal"] if bitonal else
+                                      (spec["indexado"] if indexada
+                                       else spec["continuo"]))
 
                         def _custo_variante(im):
-                            # so conta o que o PERFIL permite: em extreme/low
-                            # o mascara e' apenas ["jpeg"]; incluir Flate aqui
-                            # fazia o NEAREST ganhar e o JPEG final ficar
-                            # grande (EM3120 pg3 mantinha o original).
-                            permitidos = (spec["bitonal"] if bitonal else
-                                          (spec["indexado"] if indexada
-                                           else spec["continuo"]))
                             custos = []
                             if "jpeg" in permitidos and not bitonal:
-                                custos.append(len(_jpeg_bytes(
-                                    im, spec["qualidade"])))
+                                custos.append(len(_jpeg_memo(im)))
                             if "flate" in permitidos:
-                                custos.append(len(_flate_bytes(im)))
-                            return min(custos) if custos else len(_flate_bytes(im))
-                        c_alt, c_base = _em_paralelo(
-                            [lambda: _custo_variante(alt),
-                             lambda: _custo_variante(img)])
+                                custos.append(len(_flate_memo(im)))
+                            return min(custos) if custos else len(_flate_memo(im))
+                        # Serie aqui: o paralelismo agora e' por IMAGEM (ja
+                        # estamos dentro de uma thread do pool; aninhar
+                        # submit+wait no mesmo pool trava os workers).
+                        c_alt = _custo_variante(alt)
+                        c_base = _custo_variante(img)
                         if c_alt < c_base:
                             img = alt
                 except Exception:
                     pass
         # SMask acompanha o resize (preserva transparencia, como o original).
         # So achata no branco se a mascara nao puder ser reamostrada.
-        if tem_smask and not bitonal:
+        if job["tem_smask"] and not bitonal:
+            m_raw = job["m_raw"]
             ok_mask = False
-            try:
-                m_obj = obj["/SMask"]
-                m_img = pikepdf.PdfImage(m_obj).as_pil_image().convert("L")
-                # mascara: media de area (BOX) — LANCZOS cria ringing no alfa
-                # e infla o Flate (2.037 B vs 725 B medido)
-                m_img = m_img.resize((alvo_w, alvo_h), Image.BOX)
-                dados_m, usar_pred = _flate_menor(m_img)
-                m_obj.write(dados_m)
-                if usar_pred:
-                    m_obj[Name("/Filter")] = Name("/FlateDecode")
-                    m_obj[Name("/DecodeParms")] = pikepdf.Dictionary(
-                        Predictor=12, Colors=1, BitsPerComponent=8, Columns=m_img.size[0])
-                else:
-                    m_obj[Name("/Filter")] = Name("/FlateDecode")
-                    try:
-                        del m_obj[Name("/DecodeParms")]
-                    except Exception:
-                        pass
-                m_obj[Name("/Width")] = m_img.size[0]
-                m_obj[Name("/Height")] = m_img.size[1]
-                m_obj[Name("/ColorSpace")] = Name("/DeviceGray")
-                m_obj[Name("/BitsPerComponent")] = 8
-                ok_mask = True
-            except Exception as ex:
-                log(f"    smask nao reamostrada: {ex}")
-            if not ok_mask:
-                fundo = Image.new(img.mode, img.size, (255,) * len(img.getbands()))
+            if m_raw is not None:
                 try:
-                    fundo.paste(img, _pil_da_imagem(obj["/SMask"]).convert("L").resize(img.size, Image.LANCZOS))
+                    # mascara: media de area (BOX) — LANCZOS cria ringing no
+                    # alfa e infla o Flate (2.037 B vs 725 B medido)
+                    m_img = m_raw.convert("L").resize((alvo_w, alvo_h), Image.BOX)
+                    dados_m, usar_pred = _flate_menor(m_img)
+                    smask = {"dados": dados_m, "usar_pred": usar_pred,
+                             "w": m_img.size[0], "h": m_img.size[1]}
+                    ok_mask = True
+                except Exception as ex:
+                    avisos.append(f"    smask nao reamostrada: {ex}")
+            if not ok_mask:
+                achatar = True
+                try:
+                    fundo = Image.new(img.mode, img.size,
+                                      (255,) * len(img.getbands()))
+                    fundo.paste(img, m_raw.convert("L").resize(img.size,
+                                                               Image.LANCZOS))
                     img = fundo
                 except Exception:
                     pass
-                try:
-                    del obj["/SMask"]
-                except Exception:
-                    pass
-        reamostrada = True
-    else:
-        reamostrada = False
 
     # --- reduz complexidade de cor (Extreme) ---
     # Vale SEMPRE que a imagem vai ser re-codificada: o motor converte as
@@ -1281,58 +1344,36 @@ def _recomprime_imagem(pdf, obj, spec, usos, log):
     if (spec.get("reduz_cor") and img.mode == "RGB" and _e_cinza(img)):
         img = img.convert("L")
 
-    try:
-        orig_len = len(obj.read_raw_bytes())
-    except Exception:
-        orig_len = None
-
-    mascara = spec["bitonal"] if bitonal else (spec["indexado"] if indexada else spec["continuo"])
-    _t_enc = _t.time()
-    candidatos = []  # (nbytes, aplica_fn, rotulo)
+    orig_len = job["orig_len"]
+    mascara = spec["bitonal"] if bitonal else (spec["indexado"] if indexada
+                                               else spec["continuo"])
+    candidatos = []  # (nbytes, dados, meta, rotulo)
 
     def tenta_jpeg():
         im = img
+        decode = None
         if im.mode == "CMYK":
-            cs_out, extra = "/DeviceCMYK", {"Decode": [1, 0, 1, 0, 1, 0, 1, 0]}
+            cs_out = "/DeviceCMYK"
+            decode = [1, 0, 1, 0, 1, 0, 1, 0]
         elif im.mode == "L":
-            cs_out, extra = "/DeviceGray", {}
+            cs_out = "/DeviceGray"
         else:
             im = im.convert("RGB") if im.mode != "RGB" else im
-            cs_out, extra = "/DeviceRGB", {}
+            cs_out = "/DeviceRGB"
         # Original: Filter=[/FlateDecode /DCTDecode], DecodeParms=[None {Quality}]
         # (camada Flate externa sobre o JPEG — evidenciado em saidas reais).
-        jpeg = _jpeg_bytes(im, spec["qualidade"])
+        jpeg = _jpeg_memo(im)
         dados = zlib.compress(jpeg, 9)
-
-        def aplica(o, dados=dados, im=im, cs_out=cs_out, extra=extra):
-            o.write(dados)
-            o[Name("/Filter")] = pikepdf.Array(
-                [Name("/FlateDecode"), Name("/DCTDecode")])
-            o[Name("/DecodeParms")] = pikepdf.Array(
-                [None, pikepdf.Dictionary(Quality=spec["qualidade"])])
-            o[Name("/Width")] = im.size[0]
-            o[Name("/Height")] = im.size[1]
-            o[Name("/ColorSpace")] = Name(cs_out)
-            o[Name("/BitsPerComponent")] = 8
-            for k in ("/Intent",):
-                try:
-                    del o[k]
-                except Exception:
-                    pass
-            if extra:
-                o[Name("/Decode")] = extra["Decode"]
-            elif "/Decode" in o:
-                try:
-                    del o["/Decode"]
-                except Exception:
-                    pass
-        return len(dados), aplica, f"jpeg q{spec['qualidade']}"
+        meta = {"filter": ["/FlateDecode", "/DCTDecode"],
+                "decode_parms": [None, {"Quality": spec["qualidade"]}],
+                "width": im.size[0], "height": im.size[1],
+                "colorspace": cs_out, "bpc": 8,
+                "remove": ["/Intent"], "decode": decode}
+        return len(dados), dados, meta, f"jpeg q{spec['qualidade']}"
 
     def tenta_flate():
         im = img
-        if im.mode == "CMYK":
-            im = im.convert("RGB")
-        if im.mode == "P":
+        if im.mode in ("CMYK", "P"):
             im = im.convert("RGB")
         if im.mode == "1":
             cs_out, bpc = "/DeviceGray", 1
@@ -1342,74 +1383,42 @@ def _recomprime_imagem(pdf, obj, spec, usos, log):
             im = im.convert("RGB") if im.mode != "RGB" else im
             cs_out, bpc = "/DeviceRGB", 8
         # menor entre PNG+predictor e zlib cru (o preditor pode piorar)
-        dados, usar_pred = _flate_menor(im)
+        dados, usar_pred = _flate_menor(im, _flate_memo(im))
         cores = 1 if cs_out == "/DeviceGray" else 3
-
-        def aplica(o, dados=dados, im=im, cs_out=cs_out, bpc=bpc,
-                   cores=cores, usar_pred=usar_pred):
-            o.write(dados)
-            o[Name("/Filter")] = Name("/FlateDecode")
-            if usar_pred:
-                o[Name("/DecodeParms")] = pikepdf.Dictionary(
-                    Predictor=12, Colors=cores, BitsPerComponent=bpc,
-                    Columns=im.size[0])
-            else:
-                try:
-                    del o[Name("/DecodeParms")]
-                except Exception:
-                    pass
-            o[Name("/Width")] = im.size[0]
-            o[Name("/Height")] = im.size[1]
-            o[Name("/ColorSpace")] = Name(cs_out)
-            o[Name("/BitsPerComponent")] = bpc
-        return len(dados), aplica, "flate"
+        if usar_pred:
+            dp = {"Predictor": 12, "Colors": cores, "BitsPerComponent": bpc,
+                  "Columns": im.size[0]}
+        else:
+            dp = None  # None = apagar /DecodeParms
+        meta = {"filter": "/FlateDecode", "decode_parms": dp,
+                "width": im.size[0], "height": im.size[1],
+                "colorspace": cs_out, "bpc": bpc}
+        return len(dados), dados, meta, "flate"
 
     def tenta_g4():
         im = img.convert("L").convert("1") if img.mode != "1" else img
         dados, gw, gh = _g4_bytes(im)
-
-        def aplica(o, dados=dados, gw=gw, gh=gh):
-            o.write(dados)
-            o[Name("/Filter")] = Name("/CCITTFaxDecode")
-            o[Name("/DecodeParms")] = pikepdf.Dictionary(K=-1, Columns=gw,
-                                                         Rows=gh, BlackIs1=True)
-            o[Name("/Width")] = gw
-            o[Name("/Height")] = gh
-            o[Name("/ColorSpace")] = Name("/DeviceGray")
-            o[Name("/BitsPerComponent")] = 1
-            for k in ("/SMask", "/Intent", "/Decode"):
-                try:
-                    del o[k]
-                except Exception:
-                    pass
-        return len(dados), aplica, "group4"
+        meta = {"filter": "/CCITTFaxDecode",
+                "decode_parms": {"K": -1, "Columns": gw, "Rows": gh,
+                                 "BlackIs1": True},
+                "width": gw, "height": gh, "colorspace": "/DeviceGray", "bpc": 1,
+                "remove": ["/SMask", "/Intent", "/Decode"]}
+        return len(dados), dados, meta, "group4"
 
     def tenta_jbig2():
-        enc = _jbig2_bytes(img.convert("L").convert("1") if img.mode != "1" else img)
+        enc = _jbig2_bytes(img.convert("L").convert("1") if img.mode != "1"
+                           else img)
         if not enc:
             return None
         g, dados = enc
+        meta = {"filter": "/JBIG2Decode", "width": img.size[0],
+                "height": img.size[1], "colorspace": "/DeviceGray", "bpc": 1,
+                "remove": ["/SMask", "/Intent", "/Decode"]}
+        if g:
+            # vira `pdf.make_stream(g)` no apply (pikepdf so na thread principal)
+            meta["decode_parms"] = {"JBIG2Globals": g}
+        return len(dados), dados, meta, "jbig2"
 
-        def aplica(o, dados=dados, g=g):
-            o.write(dados)
-            o[Name("/Filter")] = Name("/JBIG2Decode")
-            if g:
-                o[Name("/DecodeParms")] = pikepdf.Dictionary(
-                    JBIG2Globals=pdf.make_stream(g))
-            o[Name("/Width")] = img.size[0]
-            o[Name("/Height")] = img.size[1]
-            o[Name("/ColorSpace")] = Name("/DeviceGray")
-            o[Name("/BitsPerComponent")] = 1
-            for k in ("/SMask", "/Intent", "/Decode"):
-                try:
-                    del o[k]
-                except Exception:
-                    pass
-        return len(dados), aplica, "jbig2"
-
-    # Os encoders rodam em paralelo: `tenta_*` so LEEM `img` e devolvem
-    # bytes + uma closure de aplicacao; nada toca no PDF aqui. No processo.pdf
-    # os encoders sao ~36 s dos 82 s da fase de imagem.
     tarefas = []
     for tipo in mascara:
         if tipo == "jpeg" and not bitonal:
@@ -1421,20 +1430,17 @@ def _recomprime_imagem(pdf, obj, spec, usos, log):
             tarefas.append(("jbig2", tenta_jbig2))
         # "source" = manter bytes originais (candidato implicito)
 
-    def _seguro(nome, fn):
-        def _roda():
-            try:
-                return fn()
-            except Exception as ex:
-                log(f"    candidato {nome} falhou: {ex}")
-                return None
-        return _roda
-
-    for res in _em_paralelo([_seguro(nome, fn) for nome, fn in tarefas]):
+    _t_enc = _time.time()
+    for nome, fn in tarefas:
+        try:
+            res = fn()
+        except Exception as ex:
+            avisos.append(f"    candidato {nome} falhou: {ex}")
+            continue
         if res is not None:
             candidatos.append(res)
-
-    _TEMPO_IMG["encode"] += _t.time() - _t_enc
+    _TEMPO_IMG["encode"] = (_TEMPO_IMG.get("encode", 0.0)
+                            + _time.time() - _t_enc)
 
     # (o antigo "Flate de resgate" foi removido: ele disparava justamente nos
     #  perfis que NAO listam flate — extreme e low usam so JPEG — e produzia
@@ -1442,16 +1448,132 @@ def _recomprime_imagem(pdf, obj, spec, usos, log):
     #  do DO3877 /Im150 em extreme.)
 
     # "source" so vale se nao reamostrou
-    if not reamostrada and "source" in mascara and orig_len is not None:
-        candidatos.append((orig_len, lambda o: None, "original"))
+    if not job["reamostra"] and "source" in mascara and orig_len is not None:
+        candidatos.append((orig_len, None, None, "original"))
     if not candidatos:
-        return False, "sem-candidatos", dpi_final
+        return {"trocou": False, "rotulo": "sem-candidatos", "dados": None,
+                "meta": None, "smask": smask, "achatar": achatar,
+                "avisos": avisos}
     candidatos.sort(key=lambda c: c[0])
-    melhor_len, melhor_fn, rotulo = candidatos[0]
+    melhor_len, melhor_dados, melhor_meta, rotulo = candidatos[0]
     if orig_len is not None and melhor_len >= orig_len:
-        return False, f"mantida ({rotulo} maior)", dpi_final
-    melhor_fn(obj)
-    return True, rotulo, dpi_final
+        return {"trocou": False, "rotulo": f"mantida ({rotulo} maior)",
+                "dados": None, "meta": None, "smask": smask,
+                "achatar": achatar, "avisos": avisos}
+    return {"trocou": True, "rotulo": rotulo, "dados": melhor_dados,
+            "meta": melhor_meta, "smask": smask, "achatar": achatar,
+            "avisos": avisos}
+
+
+def _aplica_candidato(pdf, obj, dados, meta):
+    """Escreve o candidato vencedor no objeto (SO na thread principal)."""
+    obj.write(dados)
+    filtro = meta.get("filter")
+    if filtro:
+        if isinstance(filtro, (list, tuple)):
+            obj[Name("/Filter")] = pikepdf.Array([Name(f) for f in filtro])
+        else:
+            obj[Name("/Filter")] = Name(filtro)
+    # "decode_parms" ausente = nao mexer; None = apagar; dict/lista = escrever
+    if "decode_parms" in meta:
+        dp = meta["decode_parms"]
+        if dp is None:
+            try:
+                del obj[Name("/DecodeParms")]
+            except Exception:
+                pass
+        elif isinstance(dp, (list, tuple)):
+            obj[Name("/DecodeParms")] = pikepdf.Array(
+                [None if x is None else pikepdf.Dictionary(**x) for x in dp])
+        elif "JBIG2Globals" in dp:
+            obj[Name("/DecodeParms")] = pikepdf.Dictionary(
+                JBIG2Globals=pdf.make_stream(dp["JBIG2Globals"]))
+        else:
+            obj[Name("/DecodeParms")] = pikepdf.Dictionary(**dp)
+    for campo, chave in (("width", "/Width"), ("height", "/Height")):
+        if campo in meta:
+            obj[Name(chave)] = meta[campo]
+    if meta.get("colorspace"):
+        obj[Name("/ColorSpace")] = Name(meta["colorspace"])
+    if "bpc" in meta:
+        obj[Name("/BitsPerComponent")] = meta["bpc"]
+    for k in meta.get("remove") or ():
+        try:
+            del obj[k]
+        except Exception:
+            pass
+    if "decode" in meta:
+        if meta["decode"] is None:
+            try:
+                del obj["/Decode"]
+            except Exception:
+                pass
+        else:
+            obj[Name("/Decode")] = meta["decode"]
+
+
+def _aplica_mascara(m_obj, sm):
+    """Escreve a /SMask reamostrada (thread principal)."""
+    m_obj.write(sm["dados"])
+    m_obj[Name("/Filter")] = Name("/FlateDecode")
+    if sm["usar_pred"]:
+        m_obj[Name("/DecodeParms")] = pikepdf.Dictionary(
+            Predictor=12, Colors=1, BitsPerComponent=8, Columns=sm["w"])
+    else:
+        try:
+            del m_obj[Name("/DecodeParms")]
+        except Exception:
+            pass
+    m_obj[Name("/Width")] = sm["w"]
+    m_obj[Name("/Height")] = sm["h"]
+    m_obj[Name("/ColorSpace")] = Name("/DeviceGray")
+    m_obj[Name("/BitsPerComponent")] = 8
+
+
+def _aplica_job(pdf, job, res, log):
+    """Thread principal: mascara + candidato vencedor. -> (trocou, rotulo)."""
+    _t_ap = _time.time()
+    try:
+        for aviso in res.get("avisos") or ():
+            log(aviso)
+        obj = job["obj"]
+        sm = res.get("smask")
+        if sm and job.get("m_obj") is not None:
+            try:
+                _aplica_mascara(job["m_obj"], sm)
+            except Exception as ex:
+                log(f"    smask nao reamostrada: {ex}")
+        if res.get("achatar"):
+            try:
+                del obj["/SMask"]
+            except Exception:
+                pass
+        if res.get("dados") is None:
+            return bool(res.get("trocou")), res.get("rotulo", "?")
+        try:
+            _aplica_candidato(pdf, obj, res["dados"], res["meta"])
+        except Exception as ex:
+            log(f"    imagem nao aplicada: {ex}")
+            return False, "erro-apply"
+        return True, res["rotulo"]
+    finally:
+        _TEMPO_IMG["aplica"] = (_TEMPO_IMG.get("aplica", 0.0)
+                                + _time.time() - _t_ap)
+
+
+def _recomprime_imagem(pdf, obj, spec, usos, log):
+    """Aplica downsampling + tenta as compressoes da mascara.
+
+    Regra do original (ForceRecompression=False): so troca se ficar menor.
+    Retorna (trocou, filtro_final, dpi_final). Versao em serie do pipeline:
+    usada por `comprimir` quando a janela e' 1 e pelos testes.
+    """
+    job = _prepara_job(pdf, obj, spec, usos, log)
+    if job["pronto"]:
+        return job["trocou"], job["rotulo"], job["dpi"]
+    res = _processa_job(job)
+    trocou, rotulo = _aplica_job(pdf, job, res, log)
+    return trocou, rotulo, job["dpi"]
 
 
 def _recomprime_mascaras(pdf, spec, usos, log):
@@ -4046,7 +4168,7 @@ def _pior_diferenca_render(entrada, saida, dpi=80):
 VERIFICAR = bool(os.environ.get("PDFAGENT_VERIFICAR"))
 
 #: Tempo gasto por bloco da fase de imagem (Fase 1 do plano de velocidade).
-_TEMPO_IMG = {"decode": 0.0, "encode": 0.0}
+_TEMPO_IMG = {"decode": 0.0, "encode": 0.0, "aplica": 0.0}
 
 _POOL = None
 
@@ -4078,13 +4200,50 @@ def _em_paralelo(funcoes):
     return [f.result() for f in futuros]
 
 
+def _submete(fn, *args):
+    """Submete uma tarefa PURA ao pool e devolve o Future (sem esperar).
+
+    Igual a `_em_paralelo`, mas devolve o futuro para o chamador montar a
+    janela do pipeline: decodifica N imagens, codifica as N em paralelo e
+    aplica na ordem em que foram preparadas.
+    """
+    global _POOL
+    n = _largura_pool()
+    if n <= 1:
+        from concurrent.futures import Future
+        fut = Future()
+        try:
+            fut.set_result(fn(*args))
+        except Exception as ex:  # repassa no result()
+            fut.set_exception(ex)
+        return fut
+    if _POOL is None:
+        from concurrent.futures import ThreadPoolExecutor
+        _POOL = ThreadPoolExecutor(max_workers=n)
+    return _POOL.submit(fn, *args)
+
+
+def _cronometra(fn, *args):
+    """Roda `fn` acumulando o tempo de CPU do pool em `_TEMPO_IMG["puro"]`.
+
+    wall_da_fase / puro = speedup real do pipeline (se der ~1, a GIL ou a
+    banda de memoria estao segurando — nao adianta subir o numero de threads).
+    """
+    _t0 = _time.time()
+    try:
+        return fn(*args)
+    finally:
+        _t1 = _time.time()
+        _TEMPO_IMG["puro"] = _TEMPO_IMG.get("puro", 0.0) + _t1 - _t0
+        _TEMPO_IMG.setdefault("jobs", []).append((_t0, _t1))
+
+
 def comprimir(entrada, saida, nivel="recommended", log=print, _guard=None,
               _sem_risco=False):
     """Comprime um PDF no nível dado. Retorna dict com estatisticas."""
     if nivel not in LEVELS:
         raise ValueError(f"nivel invalido: {nivel}")
     spec = LEVELS[nivel]
-    import time as _time
     _t0 = _time.time()
 
     def _etapa(rotulo):
@@ -4092,6 +4251,10 @@ def comprimir(entrada, saida, nivel="recommended", log=print, _guard=None,
         return "%s (+%.1fs)" % (rotulo, _time.time() - _t0)
 
     log(_etapa(f"[1] abrindo {os.path.basename(entrada)} (nivel {spec['rotulo']})"))
+    # zera o perfil desta execucao (a GUI chama comprimir varias vezes no mesmo
+    # processo; sem isso os tempos e a lista de jobs acumulariam)
+    for _chave in list(_TEMPO_IMG):
+        _TEMPO_IMG.pop(_chave, None)
     pdf = pikepdf.open(entrada)
     try:
         if pdf.is_encrypted:
@@ -4112,11 +4275,49 @@ def comprimir(entrada, saida, nivel="recommended", log=print, _guard=None,
             _aplica_clip_imagens(pdf, log)
         usos = _tamanhos_na_pagina(pdf)
         total = trocadas = 0
+
+        # --- pipeline por imagem -------------------------------------------
+        # Thread principal: decodifica (pikepdf) e aplica (pikepdf).
+        # Pool: resize + conversao de cor + encoders, que eram ~metade do
+        # tempo e rodavam em SERIE (so os 1-2 encoders de UMA imagem iam ao
+        # pool). A janela limita quantas imagens ficam decodificadas ao mesmo
+        # tempo (memoria: ~15 MB por RGB 1856x2814).
+        from collections import deque
+        janela = int(os.environ.get("PDFAGENT_JANELA") or _largura_pool())
+        fila = deque()   # (future, job) na ordem de submissao
+        em_voo = set()   # objgens preparados e ainda nao aplicados
+
+        def _aplica_futuro(fut, job):
+            _te = _time.time()
+            try:
+                res = fut.result()
+            except Exception as ex:
+                log(f"    imagem ignorada: {ex}")
+                return 0
+            finally:
+                _TEMPO_IMG["espera"] = (_TEMPO_IMG.get("espera", 0.0)
+                                        + _time.time() - _te)
+            trocou, _como = _aplica_job(pdf, job, res, log)
+            return bool(trocou)
+
+        def _drena():
+            """Aplica tudo o que esta na fila (ordem de preparo preservada)."""
+            nonlocal trocadas
+            while fila:
+                fut, job = fila.popleft()
+                em_voo.discard(job["objgen"])
+                if _aplica_futuro(fut, job):
+                    trocadas += 1
+
         for pagina in pdf.pages:
+            _tp0 = _time.time()
             try:
                 imagens = dict(pagina.get_images())
             except Exception:
                 continue
+            finally:
+                _TEMPO_IMG["paginas"] = (_TEMPO_IMG.get("paginas", 0.0)
+                                         + _time.time() - _tp0)
             for _nome, obj in imagens.items():
                 try:
                     if obj.objgen is None:
@@ -4124,15 +4325,61 @@ def comprimir(entrada, saida, nivel="recommended", log=print, _guard=None,
                 except Exception:
                     continue
                 total += 1
+                # Mesmo objeto em varias paginas: esvazia a janela antes de
+                # re-preparar. Em serie a 2a ocorrencia decodificava o estado
+                # JA aplicado pela 1a; com janela aberta ela veria o original.
+                if obj.objgen in em_voo:
+                    _drena()
+                _tk0 = _time.time()
                 try:
-                    trocou, como, _dpi = _recomprime_imagem(
-                        pdf, obj, spec, usos, log)
-                    trocadas += bool(trocou)
+                    job = _prepara_job(pdf, obj, spec, usos, log)
                 except Exception as ex:
                     log(f"    imagem ignorada: {ex}")
+                    continue
+                finally:
+                    _TEMPO_IMG["prepara"] = (_TEMPO_IMG.get("prepara", 0.0)
+                                             + _time.time() - _tk0)
+                if job["pronto"]:
+                    trocadas += bool(job["trocou"])
+                    continue
+                fila.append((_submete(_cronometra, _processa_job, job), job))
+                em_voo.add(job["objgen"])
+                if len(fila) >= janela:
+                    fut, j0 = fila.popleft()
+                    em_voo.discard(j0["objgen"])
+                    if _aplica_futuro(fut, j0):
+                        trocadas += 1
+        _drena()
         log(_etapa(f"[3] imagens: {trocadas}/{total} recomprimidas"))
-        log("    tempo imagem: decode %.1fs, encode %.1fs"
-            % (_TEMPO_IMG["decode"], _TEMPO_IMG["encode"]))
+        log("    tempo imagem: paginas %.1fs, prepara %.1fs (decode %.1fs), "
+            "pool %.1fs (encode %.1fs), espera %.1fs, aplicar %.1fs "
+            "[%d threads, janela %d]"
+            % (_TEMPO_IMG.get("paginas", 0.0), _TEMPO_IMG.get("prepara", 0.0),
+               _TEMPO_IMG["decode"], _TEMPO_IMG.get("puro", 0.0),
+               _TEMPO_IMG["encode"], _TEMPO_IMG.get("espera", 0.0),
+               _TEMPO_IMG["aplica"], _largura_pool(), janela))
+        _jobs = _TEMPO_IMG.get("jobs") or []
+        if _jobs:
+            _ev = []
+            for _a, _b in _jobs:
+                _ev.append((_a, 1))
+                _ev.append((_b, -1))
+            _ev.sort()
+            _n = _pico = 0
+            _ocup = 0.0
+            _ant = _ev[0][0]
+            for _t, _d in _ev:
+                if _n > 0:
+                    _ocup += _t - _ant
+                _n += _d
+                _pico = max(_pico, _n)
+                _ant = _t
+            _dur = sorted(_b - _a for _a, _b in _jobs)
+            log("    pool: ocupado %.1fs, pico %d concorrentes, job mediano "
+                "%.2fs, job p95 %.2fs (n=%d)"
+                % (_ocup, _pico, _dur[len(_dur) // 2],
+                   _dur[int(len(_dur) * 0.95)], len(_dur)))
+            _TEMPO_IMG.pop("jobs", None)
         try:
             _recomprime_mascaras(pdf, spec, usos, log)
         except Exception as ex:
