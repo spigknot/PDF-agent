@@ -229,8 +229,19 @@ def _descritores_vivos(pdf):
     return vivos
 
 
-def _usos_por_fonte(pdf):
-    """[(objeto_fonte, set de codigos int, largura em bytes)] por uso real."""
+def _usos_e_codigos(pdf):
+    """Um UNICO walk do conteudo devolvendo (codigos_por_fonte, usos_por_fonte).
+
+    Antes eram dois walks completos (376 paginas + Form XObjects cada), ~11,6 s
+    dos 111 s. As duas visoes saem do mesmo parser:
+
+    - `codigos_por_fonte`: {objgen: set(codigos)}. Fonte citada por `Tf` entra
+      com set vazio mesmo sem nenhum `Tj` (sem isso ela e' apagada do
+      /Resources e a pagina fica sem fonte — processo.pdf pg148, /R72).
+    - `usos_por_fonte`: [(objeto_fonte, codigos, largura_em_bytes)] agregado
+      por objgen, com a largura do tipo da fonte (2 para Type0).
+    """
+    por_obj = defaultdict(set)
     saida = []
     por_fonte = {}
     vistos_res = set()
@@ -259,7 +270,7 @@ def _usos_por_fonte(pdf):
                 largura[str(nome)] = 1
         achados = defaultdict(list)
         cur = None
-        pend = []  # (tipo, valor)
+        pend = []
         for tipo, val in _tokens_conteudo(dados):
             if tipo in ("str", "hex", "name"):
                 pend.append((tipo, val))
@@ -274,6 +285,13 @@ def _usos_por_fonte(pdf):
                             cur = p.decode("latin-1")
                             break
                     pend = []
+                    if cur is not None:
+                        try:
+                            fo_tf = fontes.get(Name(cur))
+                            if fo_tf is not None:
+                                por_obj[fo_tf.objgen]   # cria entrada vazia
+                        except Exception:
+                            pass
                 elif val in (b"Tj", b"TJ", b"'", b'"') and cur is not None:
                     for tp, p in pend:
                         if tp in ("str", "hex"):
@@ -317,8 +335,9 @@ def _usos_por_fonte(pdf):
                     codigos.update(b)
             if og == (0, 0):
                 og = ("direto", id(fo))
+            por_obj[og].update(codigos)
             if og in por_fonte:
-                por_fonte[og][1].update(codigos)   # soma, nao descarta
+                por_fonte[og][1].update(codigos)
                 continue
             por_fonte[og] = [fo, set(codigos), w]
             saida.append(por_fonte[og])
@@ -331,7 +350,12 @@ def _usos_por_fonte(pdf):
             continue
         if dados:
             walk(dados, res)
-    return saida
+    return por_obj, saida
+
+
+def _usos_por_fonte(pdf):
+    """[(objeto_fonte, set de codigos int, largura em bytes)] por uso real."""
+    return _usos_e_codigos(pdf)[1]
 
 
 def _politica_subset(opts, retain=None):
@@ -2461,91 +2485,10 @@ def _tokens_conteudo(data):
 def _codigos_por_fonte(pdf):
     """objgen da fonte -> set(codigos de char usados nos contents).
 
-    Usa tokenizer byte-exato sobre o stream decodificado (nao perde
-    informacao como a decodificacao de strings do parser)."""
-
-    por_obj = defaultdict(set)
-
-    def walk(dados, res):
-        nomes = defaultdict(set)
-        cur = None
-        pend = []  # (tipo, valor)
-        for tipo, val in _tokens_conteudo(dados):
-            if tipo in ("str", "hex", "name"):
-                pend.append((tipo, val))
-                continue
-            if tipo in ("num", "arr", "dict"):
-                continue
-            if tipo == "op":
-                if val == b"Tf":
-                    cur = None
-                    for tp, p in reversed(pend):
-                        if tp == "name":
-                            cur = p.decode("latin-1")
-                            break
-                    pend = []
-                    # fonte SELECIONADA por Tf conta como usada mesmo que nao
-                    # consigamos ler nenhum glifo dela: sem isso ela e' apagada
-                    # do /Resources e a pagina fica sem fonte (processo.pdf
-                    # pg148, /R72 -> extracao vira \x00\x01...).
-                    if cur is not None:
-                        try:
-                            fo_tf = res.get("/Font", {}).get(Name(cur))
-                            if fo_tf is not None:
-                                por_obj[fo_tf.objgen]  # cria a entrada (set vazio)
-                        except Exception:
-                            pass
-                elif val in (b"Tj", b"TJ", b"'", b'"') and cur is not None:
-                    for tp, p in pend:
-                        if tp in ("str", "hex"):
-                            nomes[cur].update(p)
-                    pend = []
-                elif val == b"Do":
-                    alvo = None
-                    for tp, p in reversed(pend):
-                        if tp == "name":
-                            alvo = p
-                            break
-                    pend = []
-                    if alvo is not None:
-                        try:
-                            xo = res.get("/XObject", {}).get(Name(alvo.decode("latin-1")))
-                        except Exception:
-                            xo = None
-                        if xo is not None and str(xo.get("/Subtype")) == "/Form":
-                            sub = _bytes_conteudo(xo)
-                            if sub:
-                                walk(sub, xo.get("/Resources", res))
-                else:
-                    pend = []
-                continue
-            pend = []
-        try:
-            fontes = res.get("/Font", {})
-        except Exception:
-            return
-        for nome, codes in nomes.items():
-            try:
-                fo = fontes.get(Name(nome))
-            except Exception:
-                fo = None
-            if fo is None:
-                continue
-            try:
-                por_obj[fo.objgen].update(codes)
-            except Exception:
-                pass
-
-    for pagina in pdf.pages:
-        try:
-            res = pagina.Resources
-            dados = _bytes_conteudo(pagina)
-        except Exception:
-            continue
-        if not dados:
-            continue
-        walk(dados, res)
-    return por_obj
+    Delega para `_usos_e_codigos`: antes eram dois walks completos do conteudo
+    so' para responder as duas perguntas (quem usa e quais codigos).
+    """
+    return _usos_e_codigos(pdf)[0]
 
 
 def _tipo_obj(obj):
@@ -3435,13 +3378,14 @@ def _merge_subset_fontes(pdf, log):
         return {"fo": fo, "fd": fd, "fkey": "/FontFile2", "codigos": set(codigos),
                 "tipo": "cid", "d0": d0, "mapa": mapa, "identidade": identidade}
 
-    for og, codes in _codigos_por_fonte(pdf).items():
+    _codigos, _usos = _usos_e_codigos(pdf)   # um walk so', nao dois
+    for og, codes in _codigos.items():
         if not codes:
             continue
         m = _fonte_simples(og, codes)
         if m is not None:
             membros.append(m)
-    for fo, codigos, _w in _usos_por_fonte(pdf):
+    for fo, codigos, _w in _usos:
         if not codigos:
             continue
         try:
@@ -4386,184 +4330,233 @@ def _serializa_instrucoes(instrucoes):
     return b"\n".join(linhas)
 
 
+def _canon_cor(o):
+    try:
+        return round(float(o), 6)
+    except Exception:
+        return str(o)
+
+def _normaliza_instrucoes(instrucoes):
+    """Reescreve a lista de instrucoes: corta estado repetido, c->v/y, Tm->Td.
+
+    Funcao de modulo (antes era closure de `_normaliza_conteudo`) para poder
+    rodar dentro do worker de processos.
+    """
+    saida = []
+    identidade = True
+    # Estado que o operador so' re-escreve: re-setar o MESMO valor e' no-op
+    # e sai do stream (o motor faz isso: medido em processo.pdf, `Tf` 6.451
+    # deles contra 14.114 nossos, `M` 35 x 3.389, `j` 1.923 x 3.978).
+    # `q` empilha uma copia e `Q` restaura — senao o corte fica errado.
+    # `cm`/`Tm`/cor entram no mesmo rastreio: medido em 22/11, `cm` +5.600,
+    # `Tm` +1.960, `cs`/`sc`/`SCN` +400 contra a referencia.
+    PADRAO = {"Tc": 0.0, "Tw": 0.0, "Tz": 100.0, "Ts": 0.0, "Tr": 0.0,
+              "w": 1.0, "J": 0.0, "j": 0.0, "M": 10.0, "Tf": None,
+              "d": None, "cm": None, "Tm": None, "cs": None, "sc": None,
+              "scn": None, "SC": None, "SCN": None}
+    estado = dict(PADRAO)
+    pilha_estado = []
+    cur = None          # ponto corrente do path (x, y) para c -> v/y
+    ini = None          # inicio do subpath (para `h`)
+    for operandos, operador in instrucoes:
+        op = str(operador)
+        if op == "q":
+            pilha_estado.append(dict(estado))
+        elif op == "Q":
+            if pilha_estado:
+                estado = pilha_estado.pop()
+        elif op == "gs":
+            # ExtGState pode mexer em qualquer coisa: invalidar o rastreio
+            for k in estado:
+                estado[k] = None
+
+        # --- cortes de estado redundante ---
+        if op in estado:
+            chave = None
+            try:
+                if op in ("Tf",) and len(operandos) == 2:
+                    chave = (str(operandos[0]), float(operandos[1]))
+                elif op == "d" and len(operandos) == 2:
+                    chave = (tuple(float(x) for x in operandos[0]),
+                             float(operandos[1]))
+                elif op in ("cm", "Tm") and len(operandos) == 6:
+                    chave = tuple(round(float(x), 6) for x in operandos)
+                elif op == "cs" and len(operandos) == 1:
+                    chave = str(operandos[0])
+                elif op in ("sc", "scn", "SC", "SCN"):
+                    chave = tuple(_canon_cor(o) for o in operandos)
+                elif len(operandos) == 1:
+                    chave = float(operandos[0])
+            except Exception:
+                chave = None
+            if chave is not None:
+                # None = desconhecido (comeco do stream ou apos `gs`):
+                # registra e emite; so corta quando o valor REPETE.
+                if estado[op] is not None and chave == estado[op]:
+                    continue
+                estado[op] = chave
+
+        # --- c -> v / y quando os pontos coincidem ---
+        if op in ("m", "l") and len(operandos) == 2:
+            try:
+                ini = cur = (float(operandos[0]), float(operandos[1]))
+            except Exception:
+                cur = ini = None
+        elif op in ("v", "y") and len(operandos) == 4:
+            try:
+                cur = (float(operandos[2]), float(operandos[3]))
+            except Exception:
+                cur = None
+        elif op == "c" and len(operandos) == 6:
+            try:
+                vals = [float(x) for x in operandos]
+            except Exception:
+                vals = None
+            if vals is not None and cur is not None:
+                x1, y1, x2, y2, x3, y3 = vals
+                if (x1, y1) == cur:
+                    saida.append(pikepdf.ContentStreamInstruction(
+                        pikepdf.Array([operandos[2], operandos[3],
+                                       operandos[4], operandos[5]]),
+                        pikepdf.Operator("v")))
+                    cur = (x3, y3)
+                    continue
+                if (x2, y2) == (x3, y3):
+                    saida.append(pikepdf.ContentStreamInstruction(
+                        pikepdf.Array([operandos[0], operandos[1],
+                                       operandos[4], operandos[5]]),
+                        pikepdf.Operator("y")))
+                    cur = (x3, y3)
+                    continue
+            if vals is not None:
+                cur = (vals[4], vals[5])
+        elif op == "h":
+            cur = ini
+        elif op == "re" and len(operandos) == 4:
+            try:
+                cur = ini = (float(operandos[0]), float(operandos[1]))
+            except Exception:
+                cur = ini = None
+        elif op in ("f", "f*", "S", "s", "B", "B*", "n"):
+            cur = ini = None      # path terminou
+
+        if op == "BT":
+            identidade = True
+            estado["Tm"] = None
+        elif op in ("Td", "TD", "T*", "'", '"'):
+            identidade = False
+            estado["Tm"] = None
+        elif op == "Tm":
+            vals = None
+            try:
+                vals = [float(x) for x in operandos]
+            except Exception:
+                vals = None
+            if (identidade and vals and len(vals) == 6
+                    and vals[0] == 1 and vals[1] == 0
+                    and vals[2] == 0 and vals[3] == 1):
+                novo = pikepdf.Array([
+                    pikepdf.Object.parse(_fmt_num(vals[4]).encode()),
+                    pikepdf.Object.parse(_fmt_num(vals[5]).encode())])
+                saida.append(pikepdf.ContentStreamInstruction(
+                    novo, pikepdf.Operator("Td")))
+                identidade = False
+                estado["Tm"] = None
+                continue
+            identidade = False
+        saida.append(pikepdf.ContentStreamInstruction(operandos, operador))
+    return saida
+
+
+_TMP_PDF = None
+
+
+def _normaliza_stream(dados):
+    """Worker picklable: bytes de UM content stream -> bytes comprimidos.
+
+    Cria um PDF vazio no proprio processo so' para o parser do pikepdf (que e'
+    C++ e nao aceita bytes soltos). Devolve None quando nao vale reescrever
+    (imagem inline ou erro).
+    """
+    global _TMP_PDF
+    try:
+        if _TMP_PDF is None:
+            _TMP_PDF = pikepdf.new()
+        st = _TMP_PDF.make_stream(dados)
+        instrucoes = list(pikepdf.parse_content_stream(st))
+    except Exception:
+        return None
+    if any(str(o) in ("BI", "ID", "EI") for _op, o in instrucoes):
+        return None
+    try:
+        novo = _serializa_instrucoes(_normaliza_instrucoes(instrucoes))
+        return zlib.compress(novo, 9)
+    except Exception:
+        return None
+
+
 def _normaliza_conteudo(pdf, log):
     """Compacta content streams como o motor original.
 
     - separadores simples e '\\n' (o Word grava '\\r\\n' e espacos duplos)
     - '1 0 0 1 tx ty Tm' -> 'tx ty Td' quando a matriz de linha e' identidade
-      (economia de ~7 bytes por bloco de texto; ver docs/METODO.md)
-    Pula paginas com imagens inline (BI/ID/EI), onde o reparse e' arriscado.
+    - numeros reescritos com `_CASAS` casas (o motor grava 1-2)
+    - corta `Tf`/`cm`/`Tm`/cor que repetem o valor vigente
+    - 'c' -> 'v'/'y' quando os controles coincidem com as pontas
+
+    Cada pagina e' INDEPENDENTE: a reescrita roda em processos (o texto do
+    PDF so' e' tocado aqui na thread principal). Era 42,6 s dos 111 s, o maior
+    bloco depois das imagens.
     """
-    n_pag = 0
-    ganho = 0
-
-    def _canon_cor(o):
+    paginas = list(pdf.pages)
+    tarefas = []          # (indice, dados, tamanho_atual)
+    for pi, pagina in enumerate(paginas):
         try:
-            return round(float(o), 6)
-        except Exception:
-            return str(o)
-
-    def normaliza(instrucoes):
-        saida = []
-        identidade = True
-        # Estado que o operador so' re-escreve: re-setar o MESMO valor e' no-op
-        # e sai do stream (o motor faz isso: medido em processo.pdf, `Tf` 6.451
-        # deles contra 14.114 nossos, `M` 35 x 3.389, `j` 1.923 x 3.978).
-        # `q` empilha uma copia e `Q` restaura — senao o corte fica errado.
-        # `cm`/`Tm`/cor entram no mesmo rastreio: medido em 22/11, `cm` +5.600,
-        # `Tm` +1.960, `cs`/`sc`/`SCN` +400 contra a referencia.
-        PADRAO = {"Tc": 0.0, "Tw": 0.0, "Tz": 100.0, "Ts": 0.0, "Tr": 0.0,
-                  "w": 1.0, "J": 0.0, "j": 0.0, "M": 10.0, "Tf": None,
-                  "d": None, "cm": None, "Tm": None, "cs": None, "sc": None,
-                  "scn": None, "SC": None, "SCN": None}
-        estado = dict(PADRAO)
-        pilha_estado = []
-        cur = None          # ponto corrente do path (x, y) para c -> v/y
-        ini = None          # inicio do subpath (para `h`)
-        for operandos, operador in instrucoes:
-            op = str(operador)
-            if op == "q":
-                pilha_estado.append(dict(estado))
-            elif op == "Q":
-                if pilha_estado:
-                    estado = pilha_estado.pop()
-            elif op == "gs":
-                # ExtGState pode mexer em qualquer coisa: invalidar o rastreio
-                for k in estado:
-                    estado[k] = None
-
-            # --- cortes de estado redundante ---
-            if op in estado:
-                chave = None
-                try:
-                    if op in ("Tf",) and len(operandos) == 2:
-                        chave = (str(operandos[0]), float(operandos[1]))
-                    elif op == "d" and len(operandos) == 2:
-                        chave = (tuple(float(x) for x in operandos[0]),
-                                 float(operandos[1]))
-                    elif op in ("cm", "Tm") and len(operandos) == 6:
-                        chave = tuple(round(float(x), 6) for x in operandos)
-                    elif op == "cs" and len(operandos) == 1:
-                        chave = str(operandos[0])
-                    elif op in ("sc", "scn", "SC", "SCN"):
-                        chave = tuple(_canon_cor(o) for o in operandos)
-                    elif len(operandos) == 1:
-                        chave = float(operandos[0])
-                except Exception:
-                    chave = None
-                if chave is not None:
-                    # None = desconhecido (comeco do stream ou apos `gs`):
-                    # registra e emite; so corta quando o valor REPETE.
-                    if estado[op] is not None and chave == estado[op]:
-                        continue
-                    estado[op] = chave
-
-            # --- c -> v / y quando os pontos coincidem ---
-            if op in ("m", "l") and len(operandos) == 2:
-                try:
-                    ini = cur = (float(operandos[0]), float(operandos[1]))
-                except Exception:
-                    cur = ini = None
-            elif op in ("v", "y") and len(operandos) == 4:
-                try:
-                    cur = (float(operandos[2]), float(operandos[3]))
-                except Exception:
-                    cur = None
-            elif op == "c" and len(operandos) == 6:
-                try:
-                    vals = [float(x) for x in operandos]
-                except Exception:
-                    vals = None
-                if vals is not None and cur is not None:
-                    x1, y1, x2, y2, x3, y3 = vals
-                    if (x1, y1) == cur:
-                        saida.append(pikepdf.ContentStreamInstruction(
-                            pikepdf.Array([operandos[2], operandos[3],
-                                           operandos[4], operandos[5]]),
-                            pikepdf.Operator("v")))
-                        cur = (x3, y3)
-                        continue
-                    if (x2, y2) == (x3, y3):
-                        saida.append(pikepdf.ContentStreamInstruction(
-                            pikepdf.Array([operandos[0], operandos[1],
-                                           operandos[4], operandos[5]]),
-                            pikepdf.Operator("y")))
-                        cur = (x3, y3)
-                        continue
-                if vals is not None:
-                    cur = (vals[4], vals[5])
-            elif op == "h":
-                cur = ini
-            elif op == "re" and len(operandos) == 4:
-                try:
-                    cur = ini = (float(operandos[0]), float(operandos[1]))
-                except Exception:
-                    cur = ini = None
-            elif op in ("f", "f*", "S", "s", "B", "B*", "n"):
-                cur = ini = None      # path terminou
-
-            if op == "BT":
-                identidade = True
-                estado["Tm"] = None
-            elif op in ("Td", "TD", "T*", "'", '"'):
-                identidade = False
-                estado["Tm"] = None
-            elif op == "Tm":
-                vals = None
-                try:
-                    vals = [float(x) for x in operandos]
-                except Exception:
-                    vals = None
-                if (identidade and vals and len(vals) == 6
-                        and vals[0] == 1 and vals[1] == 0
-                        and vals[2] == 0 and vals[3] == 1):
-                    novo = pikepdf.Array([
-                        pikepdf.Object.parse(_fmt_num(vals[4]).encode()),
-                        pikepdf.Object.parse(_fmt_num(vals[5]).encode())])
-                    saida.append(pikepdf.ContentStreamInstruction(
-                        novo, pikepdf.Operator("Td")))
-                    identidade = False
-                    estado["Tm"] = None
-                    continue
-                identidade = False
-            saida.append(pikepdf.ContentStreamInstruction(operandos, operador))
-        return saida
-
-    for pi, pagina in enumerate(pdf.pages):
-        try:
-            instrucoes = list(pikepdf.parse_content_stream(pagina))
+            dados = _bytes_conteudo(pagina)
         except Exception:
             continue
-        if any(str(o) in ("BI", "ID", "EI") for _op, o in instrucoes):
-            continue  # imagem inline: nao mexer
+        if not dados:
+            continue
         try:
-            antes = 0
-            try:
-                c = pagina.get("/Contents")
-                antes = (len(c.read_raw_bytes()) if not isinstance(c, pikepdf.Array)
-                         else sum(len(x.read_raw_bytes()) for x in c))
-            except Exception:
-                antes = 0
-            novo = _serializa_instrucoes(normaliza(instrucoes))
-            comprimido = zlib.compress(novo, 9)
-            # so troca se ficar menor que o stream atual
-            try:
-                atual_raw = (c.read_raw_bytes() if not isinstance(c, pikepdf.Array)
-                             else b"".join(x.read_raw_bytes() for x in c))
-            except Exception:
-                atual_raw = None
-            if atual_raw is not None and len(comprimido) >= len(atual_raw):
-                continue
+            c = pagina.obj.get("/Contents")
+            atual = (c.read_raw_bytes() if not isinstance(c, pikepdf.Array)
+                     else b"".join(x.read_raw_bytes() for x in c))
+        except Exception:
+            continue
+        tarefas.append((pi, dados, len(atual)))
+    if not tarefas:
+        return
+    resultados = None
+    usar_pool = (not getattr(sys, "frozen", False) and len(tarefas) > 8
+                 and (os.cpu_count() or 1) > 1)
+    if usar_pool:
+        try:
+            from concurrent.futures import ProcessPoolExecutor
+            with ProcessPoolExecutor(
+                    max_workers=min(os.cpu_count() or 2, 12)) as pool:
+                resultados = list(pool.map(_normaliza_stream,
+                                           [t[1] for t in tarefas],
+                                           chunksize=8))
+        except Exception as ex:
+            log("    normaliza conteudo: pool indisponivel (%s); em serie" % ex)
+            resultados = None
+    if resultados is None:
+        resultados = [_normaliza_stream(t[1]) for t in tarefas]
+    n_pag = 0
+    ganho = 0
+    for (pi, _dados, tam_atual), comprimido in zip(tarefas, resultados):
+        if not comprimido or len(comprimido) >= tam_atual:
+            continue
+        try:
             stream = pdf.make_stream(comprimido)
             stream[Name("/Filter")] = Name("/FlateDecode")
-            pagina.Contents = stream
-            ganho += max(0, antes - len(stream.read_raw_bytes()))
+            paginas[pi].Contents = stream
+            ganho += max(0, tam_atual - len(stream.read_raw_bytes()))
             n_pag += 1
         except Exception as ex:
-            log(f"    normaliza conteudo pag{pi}: {ex}")
+            log("    normaliza conteudo pag%d: %s" % (pi, ex))
     if n_pag:
-        log(f"    content normalizado: {n_pag} pagina(s), {ganho:,} B")
-
+        log("    content normalizado: %d pagina(s), %d B" % (n_pag, ganho))
 
 def _unifica_conteudo(pdf, log):
     """Junta o /Contents de cada pagina num unico stream.
@@ -4767,6 +4760,55 @@ def _submete(fn, *args):
     return _POOL.submit(fn, *args)
 
 
+def _job_leve(job):
+    """Job sem os objetos pikepdf (`obj`/`m_obj` nao sao picklables).
+
+    `_processa_job` so' usa spec/img/img0/dimensoes/bitonal/alvo/reamostra/
+    smask — nada de pikepdf. Isso e' o que permite mandar a imagem para outro
+    PROCESSO e fugir da GIL (medido: 24,3 s de pool ocupado para 66,9 s de
+    trabalho, 2,7x, com 8 threads).
+    """
+    return {k: v for k, v in job.items() if k not in ("obj", "m_obj")}
+
+
+_POOL_PROC = None
+
+
+def _submete_proc(job):
+    """Submete `_processa_job` a um pool de PROCESSOS; None se indisponivel.
+
+    Workers proprios (nao `_largura_pool`): o pool de threads e' limitado em 8
+    de proposito (GIL), mas processo escala — medido com 24: fase de imagens
+    41,4 -> 39,1 s (o trabalho e' ~500 s de CPU, nao os 67 s que o contador de
+    threads sugeria).
+    """
+    global _POOL_PROC
+    if os.environ.get("PDFAGENT_PROC_IMG", "1") == "0":
+        return None
+    n = min(os.cpu_count() or 1,
+            int(os.environ.get("PDFAGENT_PROC_WORKERS", "24")))
+    if n <= 1 or getattr(sys, "frozen", False):
+        return None
+    try:
+        if _POOL_PROC is None:
+            from concurrent.futures import ProcessPoolExecutor
+            _POOL_PROC = ProcessPoolExecutor(max_workers=n)
+        return _POOL_PROC.submit(_processa_job, _job_leve(job))
+    except Exception:
+        _POOL_PROC = None
+        return None
+
+
+def _fecha_pool_proc():
+    global _POOL_PROC
+    if _POOL_PROC is not None:
+        try:
+            _POOL_PROC.shutdown(wait=True)
+        except Exception:
+            pass
+        _POOL_PROC = None
+
+
 def _cronometra(fn, *args):
     """Roda `fn` acumulando o tempo de CPU do pool em `_TEMPO_IMG["puro"]`.
 
@@ -4827,7 +4869,16 @@ def comprimir(entrada, saida, nivel="recommended", log=print, _guard=None,
         # pool). A janela limita quantas imagens ficam decodificadas ao mesmo
         # tempo (memoria: ~15 MB por RGB 1856x2814).
         from collections import deque
-        janela = int(os.environ.get("PDFAGENT_JANELA") or _largura_pool())
+        # janela = quantos jobs ficam em voo. Com PROCESSOS ela tem de
+        # acompanhar o numero de workers (24), senao o pipeline fica limitado
+        # a 8 e o pool fica ocioso — era o que segurava a fase em 41,5 s.
+        _nproc = 0
+        if os.environ.get("PDFAGENT_PROC_IMG", "1") != "0" \
+                and not getattr(sys, "frozen", False):
+            _nproc = min(os.cpu_count() or 1,
+                         int(os.environ.get("PDFAGENT_PROC_WORKERS", "24")))
+        janela = int(os.environ.get("PDFAGENT_JANELA")
+                     or (_nproc if _nproc > 1 else _largura_pool()))
         fila = deque()   # (future, job) na ordem de submissao
         em_voo = set()   # objgens preparados e ainda nao aplicados
 
@@ -4886,7 +4937,13 @@ def comprimir(entrada, saida, nivel="recommended", log=print, _guard=None,
                 if job["pronto"]:
                     trocadas += bool(job["trocou"])
                     continue
-                fila.append((_submete(_cronometra, _processa_job, job), job))
+                _tsub = _time.time()
+                fut = _submete_proc(job)
+                _TEMPO_IMG["pickle"] = (_TEMPO_IMG.get("pickle", 0.0)
+                                        + _time.time() - _tsub)
+                if fut is None:
+                    fut = _submete(_cronometra, _processa_job, job)
+                fila.append((fut, job))
                 em_voo.add(job["objgen"])
                 if len(fila) >= janela:
                     fut, j0 = fila.popleft()
@@ -4894,6 +4951,7 @@ def comprimir(entrada, saida, nivel="recommended", log=print, _guard=None,
                     if _aplica_futuro(fut, j0):
                         trocadas += 1
         _drena()
+        _fecha_pool_proc()
         log(_etapa(f"[3] imagens: {trocadas}/{total} recomprimidas"))
         log("    tempo imagem: paginas %.1fs, prepara %.1fs (decode %.1fs), "
             "pool %.1fs (encode %.1fs), espera %.1fs, aplicar %.1fs "
@@ -4902,6 +4960,9 @@ def comprimir(entrada, saida, nivel="recommended", log=print, _guard=None,
                _TEMPO_IMG.get("decode", 0.0), _TEMPO_IMG.get("puro", 0.0),
                _TEMPO_IMG.get("encode", 0.0), _TEMPO_IMG.get("espera", 0.0),
                _TEMPO_IMG.get("aplica", 0.0), _largura_pool(), janela))
+        if _TEMPO_IMG.get("pickle"):
+            log("    tempo imagem: submit/pickle %.1fs (serializa na thread "
+                "principal)" % _TEMPO_IMG["pickle"])
         _jobs = _TEMPO_IMG.get("jobs") or []
         if _jobs:
             _ev = []
