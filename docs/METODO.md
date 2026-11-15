@@ -679,3 +679,70 @@ estrutural. No recommended o ganho veio só da correção das strips.
 **Lição de método**: o placar de render anterior ("0,114% de pior caso") não
 cobria estas páginas — comparação estrutural e tamanho não pegam polaridade.
 Toda mudança em imagem 1-bit agora precisa de render por página.
+
+---
+
+### Rodada 8 — fusão de fontes (Fase B): a regra do motor, extraída do binário
+
+O gap era só de fonte: 3.893.562 B em streams de programa contra 2.240.376 B do
+motor. Três rodadas de engenharia reversa em `PdfOptimizeAPI.dll`
+(`FUN_18008dec0` = `0x1800907c8`, o `Merge fonts "%S" (obj. %d) e "%S"...`)
+mostraram que a fusão **não** é por bytes nem por `BaseFont`:
+
+1. duas cópias são fundíveis quando, **por código**, caem no mesmo caractere
+   (mesmo `/Encoding`, mesmo ToUnicode) com a mesma largura — é o que as
+   mensagens de aborto verificam (`difference in Encoding`, `width collision`,
+   `ToUnicode collision`, `CIDToGIDMap collision`, `difference in CIDFont` =
+   `/Subtype` + `/CIDSystemInfo`);
+2. o programa compartilhado é a **união de glifos**: o programa final de
+   `Spranq eco sans` no arquivo do motor tem 292 glifos e o maior programa do
+   arquivo original tem 272 — ele copia glifos de um programa para o outro;
+3. fonte simples **renumera** (motor: 4 glifos onde guardávamos 3.874); CID
+   mantém os GIDs e o `/CIDToGIDMap`;
+4. o programa final mantém o **cmap (3,0) formato 4 com `0xF000+código`** e
+   **não** ganha `/Encoding` novo.
+
+**Cinco bugs reais que apareceram no caminho** (cada um com medição):
+
+- `hmtx` inconsistente: 11 dos 12 programas de Calibri eram recusados pelo
+  fontTools (`too much`/`not enough 'hmtx' table data`) e ficavam **sem subset
+  nenhum**. `_abre_tt()` reajusta `numberOfHMetrics` e reconstrói a tabela
+  truncada — Calibri caiu de 43.640 B/3.874 glifos para **13.692 B/2 glifos**.
+- `TTFont.getBestCmap()` devolve vazio quando o programa só tem as tabelas
+  Symbol (1,0)/(3,0): 68 fontes do Word ficavam sem mapeamento. `_cmap_fonte()`
+  usa a união de todas as tabelas.
+- `legacy_cmap` desligado apagava a cmap e o dígito "3" **sumia do texto em 9
+  páginas**. Ligado em `_politica_subset` (vale para todos os níveis).
+- `retain_gids=True` vazava do modo "motor" para fontes simples no caminho
+  antigo: elas mantinham 3.874 slots. Fonte simples renumera sempre.
+- `OS/2.recalcUnicodeRanges` estoura `KeyError: 'cmap'` em programas sem cmap
+  (Verdana, LiberationSerif): `_garante_cmap()` cria a tabela vazia.
+
+**A parte difícil foi a união.** Os subsets do Word usam `post` 3.0, onde o
+nome do glifo é **posicional** (`glyph00042`): o mesmo nome em duas cópias
+aponta para desenhos diferentes. Fundir por nome embaralhava o texto (página
+338 ilegível); fundir por caractere colidia entre cópias com/sem ToUnicode. A
+solução: chave = **código**, glifo copiado recebe nome único (`c%04X`),
+conflito detectado por **assinatura do desenho** (contornos + coordenadas) e o
+cmap reconstruído por código (`0xF000+código`) **depois** do subset. Para CID a
+fusão exige que todo CID do membro já exista no canônico **com o mesmo desenho**
+— assim o GID não muda e o `/Identity` continua válido (era o que trocava a
+página 210: 194 CIDs sem glifo no mapa reescrito).
+
+**Resultado medido** (`processo.pdf`, streams de programa distintos):
+
+| | antes | agora | motor | Δ vs motor |
+|---|---|---|---|---|
+| FontFile2+3 distintos | 3.893.562 B / 186 | **2.364.626 B / 138** | 2.240.376 B / 135 | +124.250 (+5,5%) |
+| total recommended | 12.095.782 | **11.654.076** | 12.227.010 | −572.934 (−4,7%) |
+| texto | 0/376 | **0/376** | 0/376 | — |
+| render vs motor (10 pág.) | 0,11% | **0,11%** | — | — |
+
+Gate dos 3 níveis: recommended **95,31%** da referência, extreme **95,31%**, low
+**90,99%**; 0/3 combinações com problema, 0/21 diferenças estruturais, os 3
+níveis com texto dentro do teto.
+
+**Lição de método**: o nome do glifo não é identidade — em `post` 3.0 ele é
+só a posição na tabela. Qualquer fusão de programa de fonte tem de comparar o
+**desenho** (ou o caractere), nunca o nome, e reconstruir o cmap por código.
+

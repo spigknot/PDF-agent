@@ -366,6 +366,11 @@ def _politica_subset(opts, retain=None):
         opts.hinting = True
     else:
         opts.hinting = os.environ.get("COMPRESSPDF_HINT", "0") == "1"
+    # Preserva as cmaps "legacy" (formato 0/6, plataforma (1,0)). Sem isso o
+    # fontTools apaga a tabela e o leitor perde o mapa codigo->glifo de fontes
+    # do Word cujo cmap e' {'0x1': 'uniF001', '0xf001': 'uniF001'} — medido em
+    # processo.pdf: o digito "3" sumia do texto em 9 paginas.
+    opts.legacy_cmap = True
     if retain is not None:
         opts.retain_gids = bool(retain)
 
@@ -2082,18 +2087,71 @@ def _garante_stream_exclusivo(pdf, desc, fkey, contagem, log=None):
         return st
 
 
+def _assinatura(tt, nome):
+    """Impressao digital barata do desenho de um glifo.
+
+    Os subsets do Word nomeiam glifos por posicao (post 3.0), entao o nome nao
+    diz nada: duas copias com 'glyph00042' podem ter desenhos diferentes. Para
+    fundir com seguranca e' preciso comparar o DESENHO.
+    """
+    try:
+        glyf = tt["glyf"]
+        g = glyf[nome]
+        g.expand(glyf)
+        n = getattr(g, "numberOfContours", 0)
+        if n <= 0:
+            return (n, 0, ())
+        coords, _fim, _flags = g.getCoordinates(glyf)
+        return (n, len(coords), tuple(coords[:6]))
+    except Exception:
+        return None
+
+
+def _cmap_fonte(tt):
+    """Uniao de TODAS as tabelas cmap do programa.
+
+    `TTFont.getBestCmap()` devolve vazio quando o programa so' tem as tabelas
+    Symbol (1,0)/(3,0) — medido em processo.pdf: 68 fontes do Word com cmap
+    {'0x20': 'uniF020', '0xf020': 'uniF020'} ficavam sem mapeamento e nunca
+    eram subsetadas.
+    """
+    out = {}
+    try:
+        for t in tt["cmap"].tables:
+            try:
+                for u, nome in t.cmap.items():
+                    out.setdefault(u, nome)
+            except Exception:
+                continue
+    except Exception:
+        out = {}
+    if not out:
+        try:
+            out = tt.getBestCmap() or {}
+        except Exception:
+            out = {}
+    return out
+
+
 def _glifo_do_codigo(c, diff_map, tab_base, tt):
-    """Nome do glifo para um codigo, ou None se nao mapeavel."""
+    """Nome do glifo para um codigo, ou None se nao mapeavel.
+
+    Alem do Unicode direto, tenta a convencao Symbol/Word (0xF000+codigo):
+    medido em processo.pdf, os subsets do Word gravam o cmap com 0xF020 em vez
+    de 0x20 e os nomes 'uniF020'/'uniF024' — sem isso 68 fontes ficavam sem
+    mapeamento nenhum e nunca eram subsetadas.
+    """
     nome = diff_map.get(c) if diff_map else None
     if nome:
         return nome
     u = (tab_base or {}).get(c)
     if u is None:
         return None
-    try:
-        return (tt.getBestCmap() or {}).get(u)
-    except Exception:
-        return None
+    cmap = _cmap_fonte(tt)
+    nome = cmap.get(u)
+    if nome is None and u < 0x100:
+        nome = cmap.get(0xF000 + u)
+    return nome
 
 
 def _nomes_glifos_usados(fo, codigos, tt):
@@ -2131,10 +2189,7 @@ def _nomes_glifos_usados(fo, codigos, tt):
     except Exception:
         pass
     tab = _tabela_base(base) or {}
-    try:
-        cmap = tt.getBestCmap() or {}
-    except Exception:
-        cmap = {}
+    cmap = _cmap_fonte(tt)
     ordem = set(tt.getGlyphOrder())
     # 1) pelo Encoding do PDF
     for c in codigos:
@@ -2143,6 +2198,8 @@ def _nomes_glifos_usados(fo, codigos, tt):
             u = tab.get(c)
             if u is not None:
                 nome = cmap.get(u)
+                if nome is None and u < 0x100:
+                    nome = cmap.get(0xF000 + u)   # convencao Symbol/Word
         if nome and nome in ordem:
             nomes.add(nome)
     # 2) pelo ToUnicode (caso o codigo nao siga o WinAnsi, ex.: export do Word)
@@ -2151,6 +2208,8 @@ def _nomes_glifos_usados(fo, codigos, tt):
         if tou is not None:
             for _c, u in _parse_tounicode(tou.read_bytes(), codigos).items():
                 nome = cmap.get(u)
+                if nome is None and u < 0x100:
+                    nome = cmap.get(0xF000 + u)
                 if nome and nome in ordem:
                     nomes.add(nome)
     except Exception:
@@ -3046,18 +3105,213 @@ def _consolida_fontes(pdf, log):
     return mapa
 
 
+def _garante_cmap(tt):
+    """Cria uma tabela cmap vazia quando o programa nao tem nenhuma.
+
+    `fontTools.subset` chama OS/2.recalcUnicodeRanges, que faz ttFont["cmap"] e
+    estoura KeyError em programas sem cmap (medido: Verdana, LiberationSerif e
+    os subsets Symbol do Word). Com a tabela vazia o subset segue e a cmap sai
+    do programa final como ja' saia.
+    """
+    try:
+        if "cmap" in tt.keys():
+            return
+        from fontTools.ttLib.tables._c_m_a_p import table__c_m_a_p
+        cm = table__c_m_a_p()
+        cm.tableVersion = 0
+        cm.tables = []
+        tt["cmap"] = cm
+    except Exception:
+        pass
+
+
+def _abre_tt(raw):
+    """TTFont tolerante a programas com `hmtx` inconsistente.
+
+    Dois casos reais em processo.pdf (11 dos 12 programas de Calibri), ambos
+    recusados pelo fontTools ("too much"/"not enough 'hmtx' table data") e que
+    deixavam a fonte SEM subset nenhum — o motor a subseta para 4 glifos:
+
+    - `hhea.numberOfHMetrics` abaixo de `numGlyphs`, com os 4 bytes por glifo
+      presentes: basta reajustar o contador;
+    - `hmtx` truncada (16 bytes para 3.874 glifos): reconstroi a tabela
+      repetindo o ultimo avanco conhecido, que e' exatamente o que qualquer
+      leitor PDF faz ao passar do fim das metricas.
+    """
+    from fontTools.ttLib import TTFont
+    from fontTools.ttLib.tables._h_m_t_x import table__h_m_t_x
+    tt = TTFont(io.BytesIO(raw), lazy=True)
+    tt.recalcTimestamp = False
+    ordem = tt.getGlyphOrder()             # forca a leitura de maxp
+    n = len(ordem)
+    _garante_cmap(tt)
+    try:
+        tt["hmtx"]
+        return tt
+    except Exception:
+        pass
+    try:
+        dados = tt.reader["hmtx"]
+    except Exception:
+        dados = b""
+    disp = len(dados)
+    if disp >= 4 * n and n:
+        tt["hhea"].numberOfHMetrics = n
+        tt["hmtx"]
+        return tt
+    # `hmtx` sem bytes para todos os glifos: reconstroi
+    nlong = min(n, disp // 4) if disp else 0
+    met = {}
+    ult = 0
+    for i in range(nlong):
+        aw = int.from_bytes(dados[4 * i:4 * i + 2], "big")
+        lsb = int.from_bytes(dados[4 * i + 2:4 * i + 4], "big", signed=True)
+        met[ordem[i]] = (aw, lsb)
+        ult = aw
+    base = 4 * nlong
+    nshort = min(n - nlong, (disp - base) // 2) if disp > base else 0
+    for j in range(nshort):
+        lsb = int.from_bytes(dados[base + 2 * j:base + 2 * j + 2], "big",
+                             signed=True)
+        met[ordem[nlong + j]] = (ult, lsb)
+    for k in range(nlong + nshort, n):
+        met[ordem[k]] = (ult, 0)
+    tab = table__h_m_t_x()
+    tab.metrics = met
+    tab.tableTag = "hmtx"
+    tt["hmtx"] = tab
+    tt["hhea"].numberOfHMetrics = n
+    return tt
+
+
+def _une_glifos(dest, src, pares):
+    """Copia glifos de `src` para `dest` com nome NOVO (fecha componentes).
+
+    `pares` e' [(nome_original, nome_novo)]. O nome novo vem do caractere
+    ("uXXXX") porque os subsets do Word usam nomes posicionais (post 3.0):
+    copiar pelo nome original sobrescreveria um desenho diferente do canonico.
+    """
+    import copy
+    glyf_d, glyf_s = dest["glyf"], src["glyf"]
+    hmtx_d, hmtx_s = dest["hmtx"], src["hmtx"]
+    orig2novo = {}
+    for orig, novo in pares:
+        orig2novo[orig] = novo
+    ordem_s = set(src.getGlyphOrder())
+    vistos = set(dest.getGlyphOrder())
+    # o filtro e' pelo nome NOVO: um glifo de origem pode ter nome que ja'
+    # existe no canonico (post 3.0 usa nomes posicionais) e mesmo assim
+    # precisa ser copiado — com nome novo. Filtrar por `orig not in vistos`
+    # deixava de copiar quase tudo e o subset falhava com "MissingGlyphs...
+    # {'c0041', ...}".
+    pendentes = [o for o in orig2novo if o in ordem_s and orig2novo[o] not in vistos]
+    feitos = []
+    contador = 0
+    while pendentes:
+        orig = pendentes.pop()
+        novo = orig2novo[orig]
+        if novo in vistos or orig not in ordem_s:
+            continue
+        g = glyf_s[orig]
+        try:
+            g.expand(glyf_s)
+        except Exception:
+            pass
+        copia = copy.deepcopy(g)
+        for comp in getattr(copia, "components", []) or []:
+            alvo = comp.glyphName
+            if alvo in vistos:
+                continue
+            if alvo not in orig2novo:
+                contador += 1
+                orig2novo[alvo] = "c%04X_%d" % (contador, len(orig2novo))
+                pendentes.append(alvo)
+            comp.glyphName = orig2novo[alvo]
+        copia.glyfTable = glyf_d
+        glyf_d[novo] = copia
+        hmtx_d[novo] = hmtx_s[orig]
+        vistos.add(novo)
+        feitos.append(novo)
+    if not feitos:
+        return []
+    ordem = list(dest.getGlyphOrder())
+    for nm in feitos:
+        if nm not in ordem:
+            ordem.append(nm)
+    dest.setGlyphOrder(ordem)
+    try:
+        glyf_d.setGlyphOrder(ordem)
+    except Exception:
+        glyf_d.glyphOrder = ordem
+    dest["maxp"].numGlyphs = len(ordem)
+    return feitos
+
+
+def _aplica_cmap(tt, pares):
+    """Reconstroi o cmap do programa: {unicode: nome} -> tabelas 3,1 / 3,10.
+
+    O motor mantem cmap (3,4) nos programas (medido em processo.pdf: 19 a 90
+    entradas por fonte) e NAO escreve /Encoding. Ao compartilhar um programa
+    entre copias o cmap de origem cobre so' os caracteres de uma delas; sem
+    reconstruir, as outras paginas caem em .notdef (medido: pagina 338 com
+    glifos trocados). O subsetter apaga o cmap dos programas Symbol, por isso
+    ela e' recriada DEPOIS do subset.
+    """
+    from fontTools.ttLib.tables._c_m_a_p import CmapSubtable
+    try:
+        ordem = set(tt.getGlyphOrder())
+    except Exception:
+        return
+    mapa = {int(u): n for u, n in (pares or {}).items() if n in ordem}
+    if not mapa:
+        return
+    try:
+        bmp = {u: n for u, n in mapa.items() if 0 < u <= 0xFFFF}
+        # Fontes sem /Encoding sao SIMBOLICAS: o motor grava a tabela (3,0),
+        # nao (3,1). Com platformID 3 / platEncID 1 o leitor procura o Unicode
+        # "de verdade" (0x41) e nao acha 0xF041 — a pagina 338 saia trocada.
+        simbolica = bool(mapa) and all(u >= 0xF000 for u in mapa)
+        enc_id = 0 if simbolica else 1
+        tabs = []
+        if bmp:
+            s4 = CmapSubtable.newSubtable(4)
+            s4.platformID, s4.platEncID, s4.language = 3, enc_id, 0
+            s4.cmap = dict(bmp)
+            tabs.append(s4)
+        if len(bmp) != len(mapa):
+            s12 = CmapSubtable.newSubtable(12)
+            s12.platformID, s12.platEncID, s12.language = 3, 10, 0
+            s12.cmap = dict(mapa)
+            tabs.append(s12)
+        if not tabs:
+            return
+        cm = tt["cmap"]
+        cm.tables = tabs
+    except Exception:
+        pass
+
+
 def _subset_programa(tarefa):
     """Worker: subseta UM programa de fonte. Recebe e devolve apenas bytes/listas.
+
+    A tarefa traz o programa canonico, os programas extras de onde copiar
+    glifos que o canonico nao tem e os nomes desejados. A uniao acontece AQUI,
+    no mesmo TTFont: salvar o canonico unido e reabrir perde os nomes de glifo
+    (post formato 3.0 + cmap parcial) e o subset seguinte falha com
+    "MissingGlyphsSubsettingError".
 
     Precisa ser funcao de modulo (picklable) e nao toca em `pikepdf`: objetos do
     pikepdf nao atravessam processo.
     """
-    raw, nomes, base, tem_cid = tarefa
+    raw, extras, nomes, base, tem_cid, pares = tarefa
     try:
         from fontTools import subset
-        from fontTools.ttLib import TTFont
-        tt = TTFont(io.BytesIO(raw))
-        tt.recalcTimestamp = False   # head.modified deterministico
+        tt = _abre_tt(raw)
+        for raw_e, nomes_e in extras or ():
+            try:
+                _une_glifos(tt, _abre_tt(raw_e), nomes_e)
+            except Exception:
+                continue
         opts = subset.Options()
         opts.layout_features = ["*"]
         _politica_subset(opts, retain=tem_cid)
@@ -3065,6 +3319,8 @@ def _subset_programa(tarefa):
         ss.populate(glyphs=nomes)
         ss.subset(tt)
         _normaliza_nome_programa(tt, base)
+        if not tem_cid:
+            _aplica_cmap(tt, pares)
         buf = io.BytesIO()
         tt.save(buf)
         return buf.getvalue(), tt.getGlyphOrder()
@@ -3084,14 +3340,33 @@ def _subset_lote(tarefas):
 def _merge_subset_fontes(pdf, log):
     """Subseta UMA vez por fonte-fonte e compartilha o programa (MergeEmbeddedFonts).
 
-    O motor grava um programa por fonte-fonte e aponta todos os dicionarios para
-    ele. Medido em processo.pdf (extreme): 61 BaseFonts, 92 programas/911 KB no
-    iLovePDF contra 163/1.612 KB nossos. Aqui os dicionarios que embutem os
-    MESMOS bytes de programa sao agrupados, o subset usa a UNIAO dos glifos do
-    grupo e todos passam a apontar para o stream canonico.
+    Regra extraida do motor (REA, PdfOptimizeAPI!FUN_18008dec0 = 0x1800907c8):
 
-    Para Type0/CID o /CIDToGIDMap de cada fonte e' reconstruido contra a ordem
-    de glifos resultante (que agora e' compartilhada).
+    - o agrupamento NAO e' por bytes do programa nem por BaseFont isolado: duas
+      copias sao fundiveis quando cada codigo usado cai no MESMO caracter e o
+      programa compartilhado e' a UNIAO dos glifos das copias.
+    - o motor compara por codigo/caractere e largura, nao por glifo: as
+      mensagens de aborto do binario sao "difference in Encoding", "width
+      collision", "ToUnicode collision", "CIDToGIDMap collision" e
+      "difference in CIDFont" (= /Subtype + /CIDSystemInfo).
+    - o programa resultante mantem o cmap (medido no arquivo do motor: tabelas
+      (3,0) formato 4 com 0xF000+codigo para fontes sem /Encoding) e NAO ganha
+      /Encoding novo.
+
+    Por que a chave e' o CARACTER e nao o nome do glifo: os subsets do Word
+    usam post 3.0, onde o nome e' posicional ("glyph00042") — o mesmo nome em
+    duas copias aponta para desenhos diferentes. Fundir por nome embaralhava o
+    texto (medido: pagina 338 saia ilegivel). Aqui cada codigo vira
+    (caractere, nome) e o glifo copiado recebe um nome unico "uXXXX".
+
+    Fontes SIMPLES renumera (o /Widths do PDF e' por codigo, o glifo e'
+    achado pelo cmap); Type0/CID mantem os GIDs (`retain_gids`), porque o
+    /CIDToGIDMap depende deles — quando o GID do canonico difere do CID o
+    /CIDToGIDMap e' reescrito.
+
+    Cada particao e' subsetada com o proprio canonico; o membro que nao couber
+    nao fica intocado: vira particao de si mesmo e e' subsetado individualmente
+    (era a origem de programas inteiros sobrando no arquivo).
 
     Devolve quantas fontes foram processadas (0 = nada feito, o chamador cai no
     caminho antigo).
@@ -3177,78 +3452,210 @@ def _merge_subset_fontes(pdf, log):
     if not membros:
         return 0
 
-    # agrupa por BYTES do programa (mesma fonte-fonte literal). Agrupar por
-    # BaseFont e subsetar pela uniao de glifos foi medido e PIORA ~160 KB em
-    # processo.pdf: o motor nao faz uniao, cada copia mantem o seu subset.
+    def _base_norm(fo):
+        base = str(fo.get("/BaseFont", "")).lstrip("/")
+        return base.split("+", 1)[1] if "+" in base else base
+
+    def _cidinfo(m):
+        if m["tipo"] != "cid" or m["d0"] is None:
+            return ""
+        try:
+            csi = m["d0"].get("/CIDSystemInfo")
+            if csi is None:
+                return ""
+            return "%s|%s|%s" % (csi.get("/Registry"), csi.get("/Ordering"),
+                                 csi.get("/Supplement"))
+        except Exception:
+            return ""
+
+    def _enc_base(m):
+        try:
+            enc = m["fo"].get("/Encoding")
+            if isinstance(enc, Name):
+                return str(enc)
+            if enc is not None:
+                return str(enc.get("/BaseEncoding", "/WinAnsiEncoding"))
+        except Exception:
+            pass
+        return "/WinAnsiEncoding" if m["tipo"] == "simple" else None
+
+    def _cod2glifo(m, tt):
+        """{codigo: (nome do glifo, caracter)} do que essa copia realmente usa.
+
+        Devolve None quando ALGUM codigo usado nao tem glifo identificavel: o
+        subset pela uniao apagaria esse glifo do programa (medido: o digito "3"
+        de uma pagina sumia do texto). Fonte assim fica intocada.
+        """
+        try:
+            ordem = tt.getGlyphOrder()
+        except Exception:
+            return None
+        if m["tipo"] == "simple":
+            _n, diff, tab = _nomes_glifos_usados(m["fo"], m["codigos"], tt)
+            tu = {}
+            try:
+                tou = m["fo"].get("/ToUnicode")
+                if tou is not None:
+                    tu = _parse_tounicode(tou.read_bytes(), m["codigos"])
+            except Exception:
+                tu = {}
+            out = {}
+            for c in m["codigos"]:
+                nm = _glifo_do_codigo(c, diff, tab, tt)
+                if not nm:
+                    return None
+                u = tu.get(c)
+                if u is None:
+                    u = tab.get(c) if tab else None
+                if u is None:
+                    u = 0xF000 + int(c)
+                out[c] = (nm, int(u), _assinatura(tt, nm))
+            return out
+        out = {}
+        mp = m["mapa"] or b""
+        for cid in m["codigos"]:
+            if m["identidade"]:
+                g = cid
+            elif 2 * cid + 1 < len(mp):
+                g = (mp[2 * cid] << 8) | mp[2 * cid + 1]
+            else:
+                return None
+            if 0 < g < len(ordem):
+                out[cid] = (ordem[g], None, _assinatura(tt, ordem[g]))
+            else:
+                return None
+        return out
+
+    # --- fase 1: particionar por compatibilidade (nada e' tocado no PDF) ---
+    # Agrupamento por BYTES do programa: duas copias do mesmo programa-fonte
+    # literal. Fundir copias de programas DIFERENTES exige uniao de glifos e
+    # foi medido que o render quebra (paginas 338/339 com glifos trocados)
+    # porque os subsets do Word usam nomes posicionais (post 3.0) e cmaps
+    # parciais. Aqui o ganho vem de subsetar TODAS as copias (inclusive as que
+    # o fontTools recusava por hmtx inconsistente) e de compartilhar o stream.
     grupos = {}
     for m in membros:
         try:
-            raw = m["fd"][m["fkey"]].read_bytes()
+            m["raw"] = m["fd"][m["fkey"]].read_bytes()
         except Exception:
             continue
-        m["raw"] = raw
-        grupos.setdefault((len(raw), zlib.crc32(raw)), []).append(m)
+        grupos.setdefault((m["tipo"], _base_norm(m["fo"]), _cidinfo(m)),
+                          []).append(m)
 
-    tag = _tag_subset(pdf)
-    processados = 0
+    def _conflita(mapa, membros_g):
+        """Mesmo codigo com caractere ou DESENHO diferente impede a fusao."""
+        for _m, _tt, mc in membros_g:
+            for cod, (nome, u, ass) in mapa.items():
+                outro = mc.get(cod)
+                if outro is None:
+                    continue
+                if outro[1] is not None and u is not None and outro[1] != u:
+                    return True
+                if outro[2] is not None and ass is not None and outro[2] != ass:
+                    return True
+        return False
 
-    # --- fase 1: nomes por grupo (nao toca no PDF) ---
-    plano = []          # (membros_g, por_codigo, total_antes, tarefa)
-    for _chave, membros_g in grupos.items():
-        if not membros_g:
-            continue
-        try:
-            # o maior programa e' o canonico (tem o conjunto de glifos completo)
-            canon = max(membros_g, key=lambda x: len(x["raw"]))
-            tt = TTFont(io.BytesIO(canon["raw"]))
-            ordem = tt.getGlyphOrder()
-            ordem_set = set(ordem)
-            nomes_uniao = set()
-            por_codigo = []
-            falhou = False
-            for m in membros_g:
-                if m["tipo"] == "simple":
-                    nomes, diff_map, tab_base = _nomes_glifos_usados(
-                        m["fo"], m["codigos"], tt)
-                    if not nomes:
-                        falhou = True
-                        break
-                    nomes = set(nomes)
-                    # glifo que o canonico nao tem: nao arriscar a fusao
-                    if not nomes <= ordem_set:
-                        falhou = True
-                        break
-                    nomes_uniao |= nomes
-                    por_codigo.append(None)
-                else:
-                    c2n = {}
-                    for cid in m["codigos"]:
-                        if m["identidade"]:
-                            g = cid
-                        else:
-                            mp = m["mapa"] or b""
-                            g = ((mp[2 * cid] << 8) | mp[2 * cid + 1]
-                                 if 2 * cid + 1 < len(mp) else None)
-                        if g is not None and 0 < g < len(ordem):
-                            c2n[cid] = ordem[g]
-                    if not c2n:
-                        falhou = True
-                        break
-                    nomes_uniao |= set(c2n.values())
-                    por_codigo.append(c2n)
-            if falhou or not nomes_uniao:
+    plano = []          # (membros_g, total_antes, tarefa)
+    for _chave, do_grupo in grupos.items():
+        carregados = []
+        for m in do_grupo:
+            try:
+                tt = _abre_tt(m["raw"])
+                mapa = _cod2glifo(m, tt)
+                tt["hmtx"]
+            except Exception:
+                continue              # CFF/Type1 ou tabela corrompida: fica fora
+            if not mapa:
                 continue
-            total_antes = sum(len(m["raw"]) for m in membros_g)
-            # CID mantem os GIDs (o /CIDToGIDMap depende disso); fonte simples
-            # renumera, como o motor (medido: Calibri 4 glifos deles x 3.874
-            # nossos com retain_gids).
-            tem_cid = any(m["tipo"] == "cid" for m in membros_g)
-            tarefa = (canon["raw"], sorted(nomes_uniao),
-                      str(canon["fo"].get("/BaseFont", "")), tem_cid)
-            plano.append((membros_g, por_codigo, total_antes, tarefa))
-        except Exception as ex:
-            log("    merge fonte: %s" % ex)
+            carregados.append((m, tt, mapa))
+        if not carregados:
             continue
+        pendentes = list(carregados)
+        while pendentes:
+            pendentes.sort(key=lambda x: -len(x[1].getGlyphOrder()))
+            canon_m, canon_tt, canon_mapa = pendentes[0]
+            membros_g = [pendentes[0]]
+            resto = []
+            e_cid = canon_m["tipo"] == "cid"
+            for item in pendentes[1:]:
+                if e_cid:
+                    # CID: /CIDToGIDMap = /Identity aponta CID->GID direto no
+                    # canonico. So' funde quando TODO CID do membro ja' existe
+                    # no canonico com o mesmo DESENHO — assim o GID nao muda e
+                    # nao ha' remapeamento (era o que trocava a pagina 210:
+                    # 194 CIDs ficavam sem glifo no mapa reescrito).
+                    item[0]["_cid_ok"] = all(
+                        cod in canon_mapa and canon_mapa[cod][2] is not None
+                        and canon_mapa[cod][2] == ass
+                        for cod, (_n, _u, ass) in item[2].items())
+                    if not item[0]["_cid_ok"]:
+                        resto.append(item)
+                        continue
+                    membros_g.append(item)
+                elif _conflita(item[2], membros_g):
+                    resto.append(item)
+                else:
+                    membros_g.append(item)
+            # uniao de glifos chaveada pelo CODIGO (o nome do glifo e'
+            # posicional nos subsets do Word e nao identifica nada)
+            cod2final = {}
+            extras = []
+            for idx, (m, tt, mapa) in enumerate(membros_g):
+                pares = []
+                nome2final = {}
+                for cod, (nome, _u, _ass) in mapa.items():
+                    if int(cod) in cod2final:
+                        continue
+                    if idx == 0:
+                        # o canonico ja' tem o glifo: fica com o nome dele
+                        cod2final[int(cod)] = nome
+                        continue
+                    # dois codigos podem cair no MESMO glifo de origem; nesse
+                    # caso os dois apontam para uma copia so'. Sem isso o dict
+                    # orig->novo perde a segunda entrada e o subset falha com
+                    # MissingGlyphsSubsettingError ("c000A", "c000B").
+                    if nome in nome2final:
+                        cod2final[int(cod)] = nome2final[nome]
+                        continue
+                    novo = "c%04X" % (int(cod) & 0xFFFF)
+                    cod2final[int(cod)] = novo
+                    nome2final[nome] = novo
+                    pares.append((nome, novo))
+                if pares:
+                    extras.append((m["raw"], pares))
+            if not cod2final:
+                pendentes = resto
+                continue
+            total_antes = sum(len(m["raw"]) for m, _t, _c in membros_g)
+            tem_cid = any(m["tipo"] == "cid" for m, _t, _c in membros_g)
+            # no CID o cmap nao e' usado (o /CIDToGIDMap manda); nos simples
+            # o leitor procura 0xF000+codigo quando a fonte e' simbolica
+            pares_cmap = {}
+            if not tem_cid:
+                for m, tt, mapa in membros_g:
+                    enc = _enc_base(m)
+                    simbolica = enc is None or enc == "/WinAnsiEncoding"
+                    tab = {} if simbolica else (_tabela_base(enc) or {})
+                    for cod in mapa:
+                        nome_final = cod2final.get(int(cod))
+                        if not nome_final:
+                            continue
+                        if simbolica:
+                            if 0 <= int(cod) <= 0xFF:
+                                pares_cmap[0xF000 + int(cod)] = nome_final
+                        else:
+                            uu = tab.get(int(cod))
+                            if uu:
+                                pares_cmap[int(uu)] = nome_final
+            nomes = sorted(set(cod2final.values()))
+            tarefa = (canon_m["raw"], extras, nomes,
+                      str(canon_m["fo"].get("/BaseFont", "")), tem_cid,
+                      pares_cmap)
+            plano.append((membros_g, total_antes, tarefa))
+            pendentes = resto
+        if os.environ.get("PDFAGENT_DEBUG_FONTES"):
+            log("    grupo %s/%s: %d copia(s), %d legivel(is)"
+                % (_chave[1][:22], _chave[0], len(do_grupo), len(carregados)))
     if not plano:
         return 0
 
@@ -3265,7 +3672,7 @@ def _merge_subset_fontes(pdf, log):
     if usar_pool:
         try:
             from concurrent.futures import ProcessPoolExecutor
-            tarefas = [p[3] for p in plano]
+            tarefas = [p[2] for p in plano]
             lotes = [tarefas[i:i + lote] for i in range(0, len(tarefas), lote)]
             with ProcessPoolExecutor(
                     max_workers=min(len(lotes), os.cpu_count() or 2)) as pool:
@@ -3279,10 +3686,12 @@ def _merge_subset_fontes(pdf, log):
             log("    subset em lote indisponivel (%s); em serie" % ex)
             resultados = None
     if resultados is None:
-        resultados = [_subset_programa(p[3]) for p in plano]
+        resultados = [_subset_programa(p[2]) for p in plano]
 
     # --- fase 3: aplicar no PDF (processo principal) ---
-    for (membros_g, por_codigo, total_antes, _t), res in zip(plano, resultados):
+    tag = _tag_subset(pdf)
+    processados = 0
+    for (membros_g, total_antes, _t), res in zip(plano, resultados):
         if not res:
             continue
         novo, ordem_nova = res
@@ -3295,33 +3704,35 @@ def _merge_subset_fontes(pdf, log):
             canonico.write(zlib.compress(novo, 9), filter=Name("/FlateDecode"),
                            type_check=False)
             canonico[Name("/Length1")] = len(novo)
-            for m, c2n in zip(membros_g, por_codigo):
+            for m, _tt, mapa in membros_g:
                 try:
                     m["fd"][m["fkey"]] = canonico
-                    base = str(m["fo"].get("/BaseFont", "")).lstrip("/")
-                    if "+" in base:
-                        base = base.split("+", 1)[1]
+                    base = _base_norm(m["fo"])
                     m["fo"][Name("/BaseFont")] = Name("/%s+%s" % (tag, base))
                     if m["tipo"] == "cid" and m["d0"] is not None:
                         try:
                             m["d0"][Name("/BaseFont")] = Name("/%s+%s" % (tag, base))
                         except Exception:
                             pass
+                        c2n = {cid: nome for cid, (nome, _u, _a) in mapa.items()}
                         maxcid = max(c2n)
-                        mapa_novo = bytearray(2 * (maxcid + 1))
-                        for cid, nome in c2n.items():
-                            g = nome2gid.get(nome, 0)
-                            mapa_novo[2 * cid] = (g >> 8) & 0xFF
-                            mapa_novo[2 * cid + 1] = g & 0xFF
-                        if m["identidade"]:
-                            # GIDs preservados: /Identity continua valido
+                        gids = {cid: nome2gid.get(nome, 0)
+                                for cid, nome in c2n.items()}
+                        # /Identity continua valido so' quando o GID do canonico
+                        # coincide com o CID em TODOS os codigos usados.
+                        if m["identidade"] and all(g == cid for cid, g in gids.items()):
                             pass
                         else:
+                            mapa_novo = bytearray(2 * (maxcid + 1))
+                            for cid, g in gids.items():
+                                mapa_novo[2 * cid] = (g >> 8) & 0xFF
+                                mapa_novo[2 * cid + 1] = g & 0xFF
                             try:
                                 m["d0"][Name("/CIDToGIDMap")].write(
                                     zlib.compress(bytes(mapa_novo), 9))
                             except Exception:
-                                novo_c2g = pdf.make_stream(zlib.compress(bytes(mapa_novo), 9))
+                                novo_c2g = pdf.make_stream(
+                                    zlib.compress(bytes(mapa_novo), 9))
                                 novo_c2g[Name("/Filter")] = Name("/FlateDecode")
                                 m["d0"][Name("/CIDToGIDMap")] = novo_c2g
                     processados += 1
@@ -3332,7 +3743,7 @@ def _merge_subset_fontes(pdf, log):
             continue
     if processados:
         log("    fontes: %d copia(s) -> %d programa(s), %d fonte(s) reapontada(s)"
-            % (len(membros), len(grupos), processados))
+            % (len(membros), len(plano), processados))
     return processados
 
 
@@ -3395,7 +3806,11 @@ def _subset_fontes(pdf, log):
                 continue  # nao sabemos mapear todos: nao arriscar
             opts = subset.Options()
             opts.layout_features = ["*"]
-            _politica_subset(opts)
+            # fonte simples renumera: o /Widths do PDF e' indexado por CODIGO e
+            # o glifo vem do nome no /Encoding, logo o GID e' livre. Medido em
+            # processo.pdf: o motor grava 4 glifos, nos gravavamos 3.874 porque
+            # o retain_gids=True do modo "motor" vazava para ca.
+            _politica_subset(opts, retain=False)
             ss = subset.Subsetter(opts)
             ss.populate(glyphs=sorted(nomes))
             ss.subset(tt)
