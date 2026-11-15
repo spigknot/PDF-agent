@@ -628,6 +628,39 @@ Duas correções de fidelidade/velocidade que saíram junto:
   escrita da máscara é a única parte móvel de thread — provado que o teste
   falha se ela for desligada).
 
+### Rodada 11 — 76,6 s: o gargalo escondido era a normalização de conteúdo
+
+Instrumentando as fases (`PDFAGENT_DEBUG_TEMPO=1`) apareceu o que o perfil
+anterior escondia: **`_normaliza_conteudo` custava 42,6 s** dos 111,5 s — o
+maior bloco depois das imagens — enquanto o subset de fontes, que eu tratava
+como gargalo, custava 3,5 s. E a coleta (`_codigos_por_fonte` +
+`_usos_por_fonte`) custava 11,6 s por fazer **dois walks completos** do conteúdo.
+
+| bloco | antes | depois | como |
+|---|---|---|---|
+| `[3]` imagens | 42,2 s | **38,3 s** | `ProcessPoolExecutor` (24) + janela 24 |
+| `_normaliza_conteudo` | 42,6 s | **15,0 s** | reescrita por página em processos |
+| coleta | 11,6 s | **8,4 s** | um walk só (`_usos_e_codigos`) |
+| subset de fontes | 3,5 s | 3,5 s | — |
+| **total** | **111,5 s** | **76,6 s** (‑31%) | |
+
+Três detalhes que custaram:
+
+- a reescrita da normalização virou `_normaliza_instrucoes` (função de módulo) e
+  o worker `_normaliza_stream` cria um `pikepdf.new()` local só para o parser
+  (que é C++ e não aceita bytes soltos) e devolve **bytes comprimidos**;
+- `_processa_job` nunca tocou em `pikepdf`, então bastou `_job_leve` (sem
+  `obj`/`m_obj`) para mandar o job a processo. Mas **a janela do pipeline
+  continuava 8** (valor das threads): com 24 processos e janela 8 o pool ficava
+  ocioso e a fase não melhorava nada — corrigir a janela foi o que destravou;
+- o pickle dos jobs é 0,2–0,4 s, ou seja **não** era a serialização que segurava
+  (medido, não suposto).
+
+**Piso do que sobrou**: a fase de imagem é ~500 s de trabalho de CPU (16/24/32
+workers variam 1–2 s) e a normalização tem 15 s de parse+reescrita. Chegar aos
+60 s exigiria reescrever o content stream sem `pikpdf.ContentStreamInstruction`
+— próximo desenho, não ajuste.
+
 ### Rodada 10 — fechamento do plano de velocidade (101 s; a GIL é o teto)
 
 Perfil final do `recommended` em `processo.pdf` (36 CPUs, `PDFAGENT_THREADS=8`):
