@@ -58,9 +58,13 @@ transparência RGBA, formulário + link, 25 páginas, imagem 2600×3400 e misto.
 
 | nível | CompressPDF | iLovePDF | Δ | texto extraído |
 |---|---|---|---|---|
-| Recommended | 12.103.750 B | 12.227.010 B | −1,01% | idêntico (0/376) |
-| Extreme | 9.311.583 B | 9.275.878 B | +0,38% | 3/376 (acento/espaço) |
-| Low | **15.738.078 B** | 16.565.289 B | **−4,99%** | idêntico (0/376) |
+| Recommended | **11.465.205 B** | 12.227.010 B | **−6,23%** | idêntico (0/376) |
+| Extreme | **8.651.883 B** | 9.275.878 B | **−6,73%** | 3/376 (bug do extrator, §METODO 5) |
+| Low | **14.884.414 B** | 16.565.289 B | **−10,15%** | idêntico (0/376) |
+
+Os três níveis ficaram **menores** que o iLovePDF (93,77% / 93,27% / 89,85% da
+referência). Até 14/11 éramos 1,01% menores no recommended e 0,38% **maiores** no
+extreme; as rodadas 8–10 (fusão de fontes e content stream) viraram o placar.
 
 Render contra a referência de cada nível: pior caso **0,114%** (pg338) — única
 divergência visual que resta: máscara 1-bit que o motor reamostra e nós não.
