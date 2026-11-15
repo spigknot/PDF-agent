@@ -624,3 +624,58 @@ Duas correções de fidelidade/velocidade que saíram junto:
   janela=1, e a `/SMask` tem de ter o tamanho da mãe depois do pipeline (a
   escrita da máscara é a única parte móvel de thread — provado que o teste
   falha se ela for desligada).
+
+### Rodada 7 — JBIG2, e o bug de render que ele desenterrou
+
+**JBIG2 (encoder de terceiro)**: `tenta_jbig2` existia desde sempre e nunca
+rodava (`shutil.which("jbig2")` vazio). Compilado do fonte
+(`agl/jbig2enc`) com MSYS2 **portátil** em `%LOCALAPPDATA%\msys2_jb` (não há
+compilador na máquina; `C:\msys64` é do usuário e não foi mexido no final) e
+empacotado com as 19 DLLs em `%LOCALAPPDATA%\PDFagent\tools\` — `_acha_jbig2()`
+procura em `PDFAGENT_JBIG2`, no PATH e em `tools/`.
+
+Dois modos medidos nas 65 imagens 1-bit de `processo.pdf`:
+
+| modo | total | observação |
+|---|---|---|
+| CCITT G4 (antes) | 692.670 B | — |
+| JBIG2 simbólico (`-s -p`) | 442.591 B | 370 KB só de globais (1 dicionário por imagem) |
+| **JBIG2 genérico (`-p`)** | **426.048 B** | sem globais, **sem perda** — escolhido |
+
+O genérico escreve em **stdout** (o `-b` só vale no simbólico) e o custo das
+globais passou a contar na escolha do candidato (senão o simbólico ganhava em
+imagem pequena e o arquivo crescia: 8×6 px, G4 11 B × JBIG2 70+39 B).
+
+**O bug que apareceu no meio**: ao ligar JBIG2, 6 páginas passaram a renderizar
+certo — e as mesmas 6 estavam **77% pretas** antes (`processo.pdf` pg116, 117,
+135, 179, 218 e mais uma; original 4,1%, motor 5,2%). Causa: `_g4_bytes` gravava
+o TIFF do Pillow em **várias strips** (~8 KB cada) e concatenava os bytes. Cada
+strip do T6 é autocontido; o leitor de PDF decodifica o stream como fluxo único
+→ topo invertido e corpo em branco. Medido a 150 dpi na imagem de referência:
+multi-strip 22,9%, uma strip **4,12%** (igual ao original).
+
+- Correção na raiz: `_tiff_g4()` grava o TIFF com `tiffinfo={278: altura}`
+  (uma strip). Vale também para as `/SMask` 1-bit de `_recomprime_mascaras`.
+- Tabela de polaridade medida (imagem 1240×1754, 1 strip): `BlackIs1=True` sem
+  `/Decode` = 4,12% (certo); com `/Decode [1 0]` = 95,89%; `BlackIs1=False` =
+  95,89%. O `tenta_g4` estava correto e continua sem `/Decode` — a tentação de
+  "consertar" com `/Decode [1 0]` **piora**.
+- Vacina: `tests/test_g4_strip.py` (uma strip só + ida-e-volta exata).
+
+**Efeito no tamanho** (`processo.pdf`):
+
+| nível | antes | agora | motor | Δ |
+|---|---|---|---|---|
+| recommended | 12.096.326 | **12.095.782** | 12.227.010 | −131.228 (−1,07%) |
+| extreme | 9.307.797 | **9.277.527** | 9.275.878 | **+1.649 (+0,018%)** |
+| low | 15.738.087 | **15.510.050** | 16.565.289 | −1.055.239 (−6,37%) |
+
+**Política por nível (é o que o motor faz, medido nas referências):** o JBIG2
+entra em `low` e `extreme` (`"bitonal": ["g4", "jbig2"]`, o menor vence) e fica
+**fora do recommended**, onde a referência do motor tem 0 stream JBIG2 e 221 KB
+de G4 — tentar JBIG2 ali trocava o filtro e o gate acusava diferença
+estrutural. No recommended o ganho veio só da correção das strips.
+
+**Lição de método**: o placar de render anterior ("0,114% de pior caso") não
+cobria estas páginas — comparação estrutural e tamanho não pegam polaridade.
+Toda mudança em imagem 1-bit agora precisa de render por página.

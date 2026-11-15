@@ -59,7 +59,9 @@ LEVELS = {
         "descricao": "Alta qualidade, menos compressão",
         "resolucao": 200.0, "limiar": 400.0, "qualidade": 75,
         "conversao_cor": "none",          # SetColorConversion(0)
-        "bitonal": ["g4"],                # SetBitonalCompressions(128=JBIG2*)
+        # SetBitonalCompressions(128=JBIG2*): o motor usa JBIG2 NESTE nivel
+        # (meas: 22 JBIG2 + 42 G4 em processo.pdf low); o menor vence.
+        "bitonal": ["g4", "jbig2"],
         "continuo": ["jpeg"],             # SetContinuousCompressions(2=JPEG)
         "indexado": [],                   # herda Default=None -> intocado
         "strip": set(),                   # nao chama SetStrip -> mantem tudo
@@ -74,7 +76,10 @@ LEVELS = {
         "descricao": "Boa qualidade, boa compressão",
         "resolucao": 150.0, "limiar": 150.0, "qualidade": 60,
         "conversao_cor": "none",          # SetColorConversion(0)
-        "bitonal": ["g4", "source"],      # herda Print = Group4+Source
+        # herda Print = Group4+Source. SEM jbig2: a referencia do motor em
+        # recommended tem 0 stream JBIG2 (221 KB de G4) — e' o nivel onde ele
+        # nao usa o codec, entao tentar JBIG2 aqui muda a estrutura vs motor.
+        "bitonal": ["g4", "source"],
         "continuo": ["jpeg", "flate", "source"],  # herda Print
         "indexado": ["flate", "source"],  # herda Print
         # SetStrip(1143 = 0x477). OBSERVADO em 8 saidas reais do iLovePDF:
@@ -99,7 +104,8 @@ LEVELS = {
         "descricao": "Menos qualidade, alta compressão",
         "resolucao": 72.0, "limiar": 110.0, "qualidade": 60,
         "conversao_cor": "rgb",           # SetColorConversion(1=eConvRGB)
-        "bitonal": ["g4"],                # SetBitonalCompressions(128=JBIG2*)
+        # mesma coisa no extreme (67 KB JBIG2 x 865 B G4 na referencia)
+        "bitonal": ["g4", "jbig2"],
         "continuo": ["jpeg"],             # SetContinuousCompressions(2=JPEG)
         "indexado": ["flate", "source"],  # herda Print
         "strip": {"threads", "metadata", "pieceinfo", "structtree", "thumbs",
@@ -915,55 +921,109 @@ def _png_idat(img):
     return idat
 
 
-def _jbig2_bytes(img1, tmpdir=None):
+def _acha_jbig2():
+    """Localiza o binario do jbig2enc: env, PATH, tools/ do projeto ou do app.
+
+    O encoder nao e' distribuido com o projeto (licenca/binario de terceiro),
+    entao o caminho e' configuravel: `PDFAGENT_JBIG2` aponta direto, `PATH`
+    cobre instalacoes do sistema, e `tools/jbig2.exe` (ao lado do
+    `compress.py`, ou em `%LOCALAPPDATA%\\PDFagent\\tools`) cobre a instalacao
+    portatil sem mexer no PATH do usuario.
+    """
+    import shutil
+    exe = os.environ.get("PDFAGENT_JBIG2")
+    if exe and os.path.exists(exe):
+        return exe
+    for nome in ("jbig2", "jbig2enc"):
+        exe = shutil.which(nome)
+        if exe:
+            return exe
+    base = os.path.dirname(os.path.abspath(__file__))
+    for cam in (os.path.join(base, "tools", "jbig2.exe"),
+                os.path.join(os.environ.get("LOCALAPPDATA", ""),
+                             "PDFagent", "tools", "jbig2.exe")):
+        if cam and os.path.exists(cam):
+            return cam
+    return None
+
+
+def _jbig2_bytes(img1, simbolico=False, tmpdir=None):
     """Codifica imagem '1' em JBIG2 usando o jbig2enc, se estiver instalado.
 
-    Retorna (globals, pagina) ou None. O binario nao vem no projeto: sem ele
-    seguimos com Group 4 (sem perda). Instalacao: `jbig2enc` no PATH.
+    Retorna (globais, pagina) ou None; o binario nao vem no projeto (sem ele
+    seguimos com Group 4, sem perda). Ver `_acha_jbig2` para os caminhos.
+
+    Modo GENERICO (padrao) = sem dicionario de simbolos, sem perda, sem
+    /JBIG2Globals. Medido em processo.pdf (65 imagens 1-bit): 426.048 B no
+    generico contra 442.591 do simbolico (pagina+globais) e 692.670 do G4.
+    O simbolico (`-s`) agrupa simbolos parecidos — pode perder detalhe — e
+    ainda gasta um dicionario por imagem. Fica disponivel para experimento.
+
+    Detalhe do CLI: `-b <base>` so' vale no modo simbolico; no generico o
+    stream sai em STDOUT.
     """
     import shutil
     import subprocess
     import tempfile
-    exe = shutil.which("jbig2") or shutil.which("jbig2enc")
+    exe = _acha_jbig2()
     if not exe:
         return None
+    d = None
     try:
         d = tempfile.mkdtemp(prefix="cpdf_jbig2_")
         entrada = os.path.join(d, "in.png")
         img1.save(entrada)
-        saida = os.path.join(d, "out")
-        # -s: symbols file (.sym, usado como /JBIG2Globals) | -p: PDF mode
-        subprocess.run([exe, "-s", "-p", "-b", saida, entrada],
-                       check=True, capture_output=True, timeout=120)
-        glob = saida + ".sym"
-        pag = saida + ".0000"
-        if not (os.path.exists(glob) and os.path.exists(pag)):
-            return None
-        with open(glob, "rb") as f:
-            g = f.read()
-        with open(pag, "rb") as f:
-            p = f.read()
-        for arq in (glob, pag, entrada):
-            try:
-                os.remove(arq)
-            except Exception:
-                pass
-        try:
-            os.rmdir(d)
-        except Exception:
-            pass
+        if simbolico:
+            saida = os.path.join(d, "out")
+            # -s: symbols file (.sym, usado como /JBIG2Globals) | -p: PDF mode
+            subprocess.run([exe, "-s", "-p", "-b", saida, entrada],
+                           check=True, capture_output=True, timeout=120)
+            glob = saida + ".sym"
+            pag = saida + ".0000"
+            if not (os.path.exists(glob) and os.path.exists(pag)):
+                return None
+            with open(glob, "rb") as f:
+                g = f.read()
+            with open(pag, "rb") as f:
+                p = f.read()
+            return (g or None), p
+        proc = subprocess.run([exe, "-p", entrada], check=True,
+                              capture_output=True, timeout=120)
+        p = proc.stdout
         if not p:
             return None
-        return (g or None), p
+        return None, p
     except Exception:
         return None
+    finally:
+        if d:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+def _tiff_g4(img1):
+    """TIFF com compressao Group 4 em UMA strip (tag 278 = altura).
+
+    Separado de `_g4_bytes` para o teste poder inspecionar o TIFF: o bug real
+    era o Pillow gravar varias strips e a concatenacao virar um stream CCITT
+    invalido no PDF.
+    """
+    buf = io.BytesIO()
+    img1.save(buf, format="TIFF", compression="group4",
+              tiffinfo={278: img1.size[1]})
+    return buf.getvalue()
 
 
 def _g4_bytes(img1):
-    """Codifica imagem modo '1' em CCITT Group 4 via TIFF do Pillow."""
-    buf = io.BytesIO()
-    img1.save(buf, format="TIFF", compression="group4")
-    t = buf.getvalue()
+    """Codifica imagem modo '1' em CCITT Group 4 via TIFF do Pillow.
+
+    UMA strip so' (TIFF tag 278 = altura). O Pillow quebra o TIFF em strips de
+    ~8 KB por padrao; juntar os bytes de varias strips produz um stream CCITT
+    invalido no PDF (o T6 de cada strip e' autocontido, mas o leitor de PDF
+    decodifica tudo como um fluxo unico): em processo.pdf pg116 a imagem saia
+    com o topo invertido e o corpo em branco. Medido, 150 dpi, referencia
+    4,12% de preto — multi-strip 22,89%, uma strip 4,12%.
+    """
+    t = _tiff_g4(img1)
     if t[:2] == b"II":
         endian, u16, u32 = "<", "<H", "<I"
     else:
@@ -1406,18 +1466,23 @@ def _processa_job(job):
         return len(dados), dados, meta, "group4"
 
     def tenta_jbig2():
-        enc = _jbig2_bytes(img.convert("L").convert("1") if img.mode != "1"
-                           else img)
+        im1 = img.convert("L").convert("1") if img.mode != "1" else img
+        # generico: sem perda e sem /JBIG2Globals (medido melhor que o simbolico)
+        enc = _jbig2_bytes(im1)
         if not enc:
             return None
         g, dados = enc
         meta = {"filter": "/JBIG2Decode", "width": img.size[0],
                 "height": img.size[1], "colorspace": "/DeviceGray", "bpc": 1,
                 "remove": ["/SMask", "/Intent", "/Decode"]}
+        custo = len(dados)
         if g:
-            # vira `pdf.make_stream(g)` no apply (pikepdf so na thread principal)
+            # vira `pdf.make_stream(g)` no apply; as globais CONTAM no custo,
+            # senao o modo simbolico ganha em imagem pequena e o arquivo sai
+            # maior do que com G4 (medido: 8x6 px, G4 11 B x JBIG2 70+39 B)
             meta["decode_parms"] = {"JBIG2Globals": g}
-        return len(dados), dados, meta, "jbig2"
+            custo += len(g)
+        return custo, dados, meta, "jbig2"
 
     tarefas = []
     for tipo in mascara:
@@ -1427,6 +1492,7 @@ def _processa_job(job):
             tarefas.append(("flate", tenta_flate))
         elif tipo == "g4" and bitonal:
             tarefas.append(("g4", tenta_g4))
+        elif tipo == "jbig2" and bitonal:
             tarefas.append(("jbig2", tenta_jbig2))
         # "source" = manter bytes originais (candidato implicito)
 
@@ -4355,9 +4421,9 @@ def comprimir(entrada, saida, nivel="recommended", log=print, _guard=None,
             "pool %.1fs (encode %.1fs), espera %.1fs, aplicar %.1fs "
             "[%d threads, janela %d]"
             % (_TEMPO_IMG.get("paginas", 0.0), _TEMPO_IMG.get("prepara", 0.0),
-               _TEMPO_IMG["decode"], _TEMPO_IMG.get("puro", 0.0),
-               _TEMPO_IMG["encode"], _TEMPO_IMG.get("espera", 0.0),
-               _TEMPO_IMG["aplica"], _largura_pool(), janela))
+               _TEMPO_IMG.get("decode", 0.0), _TEMPO_IMG.get("puro", 0.0),
+               _TEMPO_IMG.get("encode", 0.0), _TEMPO_IMG.get("espera", 0.0),
+               _TEMPO_IMG.get("aplica", 0.0), _largura_pool(), janela))
         _jobs = _TEMPO_IMG.get("jobs") or []
         if _jobs:
             _ev = []
