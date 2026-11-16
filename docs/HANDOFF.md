@@ -1,49 +1,51 @@
 # HANDOFF — CompressPDF × iLovePDF
 
 > Prompt de continuidade. Cole num agente novo para retomar sem perder contexto.
-> Estado em: 18 rodadas de investigação concluídas.
+> Estado em: 19 rodadas de investigação concluídas.
 
 ---
 
-## ESTADO ATUAL (fim da rodada 18, 22/11)
+## ESTADO ATUAL (fim da rodada 19, 22/11)
 
 | métrica | valor | referência (motor) |
 |---|---|---|
 | recommended | **11.382.226 B** | 12.227.010 (93,09%) |
 | extreme | 8.651.585 B | 9.275.878 (93,27%) |
 | low | 14.884.111 B | 16.565.289 (89,85%) |
-| tempo recommended | **61,8 s** (mediana de 3; A/B na mesma sessão com `PDFAGENT_FONTES_CACHE=0`: 64,9 s) | ~60 s |
+| tempo recommended | **61,8 s** (r18) − **1,0 s** da 19 (A/B intercalado) ≈ **60,8 s** | ~60 s |
 | texto | 0/376 (extreme 3/376, bug do extrator) | 0/376 |
 | render vs **original** | média 0,3131%, pior 8,67% (pg218) | pior 12,76% (motor é pior) |
-| gate | **PASS** — 0/3 + 0/21 + "coleta de fontes (pool x serial)" | — |
+| gate | **PASS** — 0/3 + 0/21 + "coleta de fontes" e "DPI efetivo" | — |
 
-Branch `paridade/rodada-5`, árvore limpa. Rodadas 17-18: coleta de fontes em
-processos (8,7 → 2,2 s) e reuso da coleta por assinatura (2ª chamada 2,4 →
-0,3 s), com a saída estruturalmente idêntica.
+Branch `paridade/rodada-5`, árvore limpa. Rodadas 17-19: coleta de fontes em
+processos, reuso da coleta por assinatura e DPI em processos — a saída segue
+estruturalmente idêntica em todas.
 
-**Mediana oficial da 18:** **61,8 s** (61,8 / 61,8 / 63,0; espalhamento 1,2 s) em
-máquina ociosa, mesmo script. A/B com `PDFAGENT_FONTES_CACHE=0` (comportamento
-da 17) na MESMA sessão: **64,9 s** (64,3 / 64,9 / 65,2) — o ganho isolado da
-rodada é 3,1 s; a diferença entre 67,1 e 64,9 é estado da máquina, não código.
+**Atenção ao medir:** o run completo varia ±2 s entre janelas da máquina (o
+mesmo código mediu 61,8 s às 11:21 e 64-66 s às 11:40). Para comparar mudanças,
+use **A/B intercalado na mesma sessão** (é o que a rodada 19 fez) ou a fase
+isolada com `PDFAGENT_*_SERIAL=1`.
 
-**Próxima rodada (19) — o que sobrou, medido:** imagens 31,2 s (piso de
-núcleos: ~500 s de CPU em 24 processos), `_normaliza_conteudo` 14,4 s (piso do
-parse+reescrita; parser próprio foi descartado na rodada 12), subset ~3 s, save
-~5 s, coleta 2,5 s. Depois das rodadas 17-18 não há mais alavanca grande: só
-mexer em imagens (que já é 16x em 24 workers) ou no save. Faltam ~2 s para o
-motor (~60 s).
+**Próxima rodada (20), se quiser o último segundo:** unificar o DPI com o clip —
+o clip já parseia a página e sobra o spawn (~0,7 s) + o parse (~1,2 s). Exige
+mexer em `_coleta_draws`/`_aplica_clip_imagens`, caminho que guarda
+`cm_idx`/`do_idx`; a rodada 19 descartou pelo risco. Depois disso o perfil é
+piso: imagens 30,7 s (16× em 24 workers), normalização 14,4 s, subset ~3 s,
+save ~5,5 s.
 
 **Ferramentas que economizam tempo:**
 - `PDFAGENT_DEBUG_TEMPO=1` → tempo por fase, com "fontes: coleta pacotes X
-  (cache|pool) Y replay Z" (o `cache` diz se a 2ª coleta foi reaproveitada).
-- `scripts/mede_tempo.py recommended 3 --fases` → mediana/média/espalhamento.
+  (cache|pool) Y replay Z" e "dpi: pacotes X, pool|serial Y".
+- `scripts/mede_tempo.py recommended 3 --fases` → mediana (cuidado com a deriva
+  entre sessões: intercale os modos).
 - `COMPRESSPDF_MERGE=0`, `COMPRESSPDF_CASAS=N`, `PDFAGENT_FONTES_SERIAL=1`,
-  `PDFAGENT_FONTES_CACHE=0`, `PDFAGENT_KERNEL_BITONAL`, `PDFAGENT_BITONAL`,
-  `PDFAGENT_PROC_*` → A/B sem editar código (`docs/COMANDOS.md` §4b).
+  `PDFAGENT_FONTES_CACHE=0`, `PDFAGENT_DPI_SERIAL=1`,
+  `PDFAGENT_KERNEL_BITONAL`, `PDFAGENT_BITONAL`, `PDFAGENT_PROC_*` → A/B sem
+  editar código (`docs/COMANDOS.md` §4b).
 
-**Quatro lições que custaram rodadas inteiras:**
+**Cinco lições que custaram rodadas inteiras:**
 1. O gate de render comparava com o **motor**; o correto é o **original** — em
-   22 páginas somos mais fiéis que ele. E cobria 10 páginas fixas, escondendo a
+   22 páginas somos mais fiéis a ele. E cobria 10 páginas fixas, escondendo a
    pior (pg218).
 2. Paralelizar o parser **que já existe** é seguro; trocar por um equivalente
    (ou filtrar operadores) desalinha índices usados em outra etapa — foi 2/21 no
@@ -56,6 +58,10 @@ motor (~60 s).
 4. Cache de coleta precisa de assinatura **estável**: `id()` de dicionário
    direto muda entre duas chamadas do mesmo arquivo. Use caminho/rótulo
    (`"p7/Fm1"`) e nomes, nunca identidade de objeto.
+5. Em `ProcessPoolExecutor`, "economizar pickle" pode sair caro: `initializer`
+   com um mapa de 0,58 MB ficou **2,6× mais lento** que mandar o mapa em cada
+   tarefa (6,30 × 2,38 s), e `chunksize=4` também perdeu (4,65 s) por
+   desbalancear tarefas de tamanhos muito diferentes.
 
 
 ---

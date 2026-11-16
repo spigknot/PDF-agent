@@ -1030,85 +1030,201 @@ def _mul(m1, m2):
     return (a*g+b*i, a*h+b*j, c*g+d*i, c*h+d*j, e*g+f*i+k, e*h+f*j+l)
 
 
+_TMP_PDF_DPI = None
+
+
+def _parse_dpi(dados):
+    """Parse do content stream com o MESMO filtro de `_tamanhos_na_pagina`.
+
+    O parser C++ do pikepdf nao aceita bytes soltos: precisa de um stream num
+    PDF local do worker (`pikepdf.new()`).
+    """
+    global _TMP_PDF_DPI
+    if _TMP_PDF_DPI is None:
+        _TMP_PDF_DPI = pikepdf.new()
+    st = _TMP_PDF_DPI.make_stream(dados)
+    return pikepdf.parse_content_stream(st, "q Q cm Do")
+
+
+def _pacotes_dpi(pdf):
+    """Empacota o que o rastreio de CTM le', em dicts picklables.
+
+    pac = {"i": {nome: objgen}, "f": {nome: (bytes, matriz, pac_filho|None)}}
+
+    - imagem: so' o objgen (e' a chave de `usos`; `(0,0)` para objeto direto,
+      como no rastreio serial);
+    - Form: bytes + `/Matrix` (identidade quando ausente) + pacote do
+      `/Resources` PROPRIO. `pac_filho is None` = Form sem `/Resources` (ou com
+      dicionario vazio): o rastreio usa o `cur` do momento, que e' o fallback
+      do pai exatamente como hoje.
+
+    Memo por identidade de `/Resources` (objgen/id) para nao repetir bytes;
+    `refs` mantem os dicionarios diretos vivos (o `id()` recicla).
+    """
+    paginas = []          # (dados da pagina, pacote)
+    memo = {}
+    refs = []
+
+    def construir(res, prof=0):
+        if res is None or prof > 8:
+            return None
+        if not getattr(res, "is_indirect", False):
+            refs.append(res)
+            chave = ("d", id(res))
+        else:
+            try:
+                og = res.objgen
+                chave = ("i", og[0], og[1])
+            except Exception:
+                return None
+        if chave in memo:
+            return memo[chave]
+        pac = {"i": {}, "f": {}}
+        memo[chave] = pac            # antes de recursar (ciclo /Parent)
+        try:
+            xobjs = dict(res.get("/XObject", {}))
+        except Exception:
+            xobjs = {}
+        for nome, xo in xobjs.items():
+            try:
+                subtipo = str(xo.get("/Subtype"))
+            except Exception:
+                continue
+            if subtipo == "/Image":
+                try:
+                    pac["i"][str(nome)] = xo.objgen
+                except Exception:
+                    continue
+            elif subtipo == "/Form":
+                try:
+                    dados = _bytes_conteudo(xo)
+                except Exception:
+                    continue
+                if not dados:
+                    continue
+                try:
+                    m = tuple(float(x) for x in xo.get("/Matrix", [1, 0, 0, 1, 0, 0]))
+                    if len(m) != 6:
+                        raise ValueError
+                except Exception:
+                    m = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+                try:
+                    filho_res = xo.get("/Resources")
+                except Exception:
+                    filho_res = None
+                if filho_res is not None:
+                    try:
+                        if len(filho_res) == 0:      # dict vazio: `or cur` no serial
+                            filho_res = None
+                    except Exception:
+                        pass
+                pac["f"][str(nome)] = (dados, m, construir(filho_res, prof + 1))
+        return pac
+
+    for pagina in pdf.pages:
+        try:
+            dados = _bytes_conteudo(pagina)
+            res = pagina.Resources
+        except Exception:
+            continue
+        if not dados:
+            continue
+        pac = construir(res)
+        if pac is not None:
+            paginas.append((dados, pac))
+    return paginas, refs
+
+
+def _caminha_dpi(ops, pac, ctm, prof, usos):
+    """Rastreio de CTM/clip sobre o pacote — o MESMO laco do serial.
+
+    Registra `usos[objgen].append((sx, sy))` da imagem desenhada, com
+    `sx = hypot(ctm[0], ctm[1])` e `sy = hypot(ctm[2], ctm[3])`, so' quando
+    `sx > 0 and sy > 0 and prof < 8`.
+    """
+    pilha = []
+    cur = pac if pac is not None else {}
+    for operandos, operador in ops:
+        op = str(operador)
+        if op == "q":
+            pilha.append((list(ctm), cur))
+        elif op == "Q":
+            if pilha:
+                ctm, cur = pilha.pop()
+        elif op == "cm":
+            ctm = _mul(ctm, [float(x) for x in operandos])
+        elif op == "Do":
+            nome = str(operandos[0])
+            og = cur["i"].get(nome)
+            if og is not None:
+                sx = math.hypot(ctm[0], ctm[1])
+                sy = math.hypot(ctm[2], ctm[3])
+                if sx > 0 and sy > 0 and prof < 8:
+                    usos[og].append((sx, sy))
+                continue
+            form = cur["f"].get(nome)
+            if form is not None and prof < 8:
+                dados, m, filho = form
+                try:
+                    sub_ops = _parse_dpi(dados)
+                except Exception:
+                    continue
+                _caminha_dpi(sub_ops, filho if filho is not None else cur,
+                             _mul(ctm, m), prof + 1, usos)
+    return usos
+
+
+def _dpi_pagina(args):
+    """Worker: parse + rastreio de UMA pagina; devolve {objgen: [(sx, sy)]}."""
+    dados, pac = args
+    try:
+        return dict(_caminha_dpi(_parse_dpi(dados), pac,
+                                 (1, 0, 0, 1, 0, 0), 0, defaultdict(list)))
+    except Exception:
+        return {}
+
+
 def _tamanhos_na_pagina(pdf):
     """Mapeia objgen da imagem -> lista de (larg_pt, alt_pt) desenhados.
 
-    Percorre os content streams rastreando a CTM (cm/q/Q/Do), inclusive
-    dentro de Form XObjects. Equivale a base para o calculo de DPI efetivo
-    usado pelo otimizador (re-amostra imagens acima do limiar).
+    Percorre os content streams rastreando a CTM (cm/q/Q/Do), inclusive dentro
+    de Form XObjects. E' a base do DPI efetivo usado pelo otimizador
+    (re-amostra imagens acima do limiar).
+
+    Rodada 19: o parse + rastreio roda em ProcessPoolExecutor (2,7 -> ~0,8 s);
+    eram 1,5 s de parse e 1,3 s de rastreio na thread principal. O parser e' o
+    MESMO (`pikepdf.parse_content_stream` com o filtro "q Q cm Do") — aqui nao
+    ha' indice guardado, mas a regra da casa vale: nao trocar por equivalente.
+
+    A ordem de `usos` (pagina a pagina, na ordem dos draws) e' preservada pelo
+    `map` + merge, e `_dpi_efetivo` so' olha o maximo.
     """
+    _t0 = _time.perf_counter()
+    paginas, _refs = _pacotes_dpi(pdf)
+    _t1 = _time.perf_counter()
+    resultados = None
+    de_pool = False
+    usar_pool = (not getattr(sys, "frozen", False) and len(paginas) > 8
+                 and (os.cpu_count() or 1) > 1
+                 and not os.environ.get("PDFAGENT_DPI_SERIAL"))
+    if usar_pool:
+        try:
+            from concurrent.futures import ProcessPoolExecutor
+            with ProcessPoolExecutor(max_workers=_workers_processo()) as pool:
+                resultados = list(pool.map(_dpi_pagina, paginas, chunksize=4))
+            de_pool = True
+        except Exception:
+            resultados = None
+    if resultados is None:
+        resultados = [_dpi_pagina(a) for a in paginas]
     usos = defaultdict(list)
-
-    def recursos_de(obj):
-        try:
-            r = obj.get("/Resources")
-        except Exception:
-            return None
-        return r
-
-    def caminha(ops, res, ctm, prof):
-        pilha = []
-        cur = res if res is not None else {}
-        for operandos, operador in ops:
-            op = str(operador)
-            if op == "q":
-                pilha.append((list(ctm), cur))
-            elif op == "Q":
-                if pilha:
-                    ctm, cur = pilha.pop()
-            elif op == "cm":
-                ctm = _mul(ctm, [float(x) for x in operandos])
-            elif op == "Do":
-                nome = Name(str(operandos[0]))
-                try:
-                    xo = cur.get(Name("/XObject"), {}).get(nome)
-                except Exception:
-                    xo = None
-                if xo is None:
-                    continue
-                try:
-                    subtipo = str(xo.get("/Subtype"))
-                except Exception:
-                    continue
-                if subtipo == "/Image":
-                    try:
-                        og = xo.objgen
-                    except Exception:
-                        continue
-                    sx = math.hypot(ctm[0], ctm[1])
-                    sy = math.hypot(ctm[2], ctm[3])
-                    if sx > 0 and sy > 0 and prof < 8:
-                        usos[og].append((sx, sy))
-                elif subtipo == "/Form" and prof < 8:
-                    try:
-                        m = [float(x) for x in xo.get("/Matrix", [1, 0, 0, 1, 0, 0])]
-                    except Exception:
-                        m = [1, 0, 0, 1, 0, 0]
-                    sub_res = recursos_de(xo) or cur
-                    try:
-                        sub_ops = pikepdf.parse_content_stream(xo, "q Q cm Do")
-                    except Exception:
-                        continue
-                    caminha(sub_ops, sub_res, _mul(ctm, m), prof + 1)
-
-    _tparse = 0.0
-    _tcaminha = 0.0
-    for pagina in pdf.pages:
-        _tp = _time.time()
-        try:
-            ops = pikepdf.parse_content_stream(pagina, "q Q cm Do")
-        except Exception:
-            continue
-        _tparse += _time.time() - _tp
-        try:
-            res = pagina.Resources
-        except Exception:
-            res = {}
-        _tc = _time.time()
-        caminha(ops, res, (1, 0, 0, 1, 0, 0), 0)
-        _tcaminha += _time.time() - _tc
+    for r in resultados:
+        for og, lista in r.items():
+            usos[og].extend(lista)
     if os.environ.get("PDFAGENT_DEBUG_TEMPO"):
-        print("    dpi: parse %.1fs, rastreio %.1fs" % (_tparse, _tcaminha))
+        print("    dpi: pacotes %.2fs, %s %.1fs"
+              % (_t1 - _t0, "pool" if de_pool else "serial",
+                 _time.perf_counter() - _t1))
     return usos
 
 

@@ -628,6 +628,39 @@ Duas correções de fidelidade/velocidade que saíram junto:
   escrita da máscara é a única parte móvel de thread — provado que o teste
   falha se ela for desligada).
 
+### Rodada 19 — DPI efetivo em processos (2,8 → 1,7 s) e a hipótese que caiu
+
+`_tamanhos_na_pagina` custava 2,7 s dos 61,8, decomposto em parse 1,5 s +
+rastreio 1,3 s (469 imagens mapeadas). Passou a montar pacotes picklables —
+`{"i": {nome: objgen}, "f": {nome: (bytes, /Matrix, pacote do /Resources)}}` —
+e a rastrear a CTM em `ProcessPoolExecutor`, com o **mesmo parser**
+(`pikepdf.parse_content_stream` com o filtro `"q Q cm Do"`) e um
+`pikepdf.new()` local por worker (o parser C++ não aceita bytes soltos).
+
+| | antes | depois |
+|---|---|---|
+| fase de DPI (isolada, 3 medidas) | 2,83 s | **1,72 s** |
+| run completo (A/B intercalado, 2 pares) | 62,5 / 63,0 s | **61,4 / 62,2 s** |
+
+O piso é o spawn do pool (~0,7 s) mais o maior stream (~0,35 s); o resto é
+paralelo. **Unificar com o clip** (que já parseia a mesma página) salvaria mais
+~1 s, mas exigiria mexer no caminho que guarda `cm_idx`/`do_idx` — descartado
+na própria rodada, mesma regra da 16.
+
+**A hipótese que a medição derrubou:** mandar o `mapa` de `/Resources` uma vez
+por worker (`ProcessPoolExecutor(initializer=...)`) em vez de em cada tarefa. O
+mapa pickla 0,58 MB, então a conta parecia óbvia — medido: **6,30 s com
+initializer contra 2,38 s com o mapa por tarefa** (2,6× pior). `chunksize=4`
+também piorou (4,65 s contra 2,38 s): junta duas páginas grandes na mesma
+tarefa e desbalanceia. Ficou mapa por tarefa, `chunksize=1`, ordem por tamanho
+decrescente. **Custo de spawn/unpickle em `ProcessPoolExecutor` não escala com
+o tamanho do que se manda — medir antes de "economizar pickle".**
+
+**Vacinas** (`tests/test_dpi_pacotes.py`): geometria exata do mapa para imagem
+da página (200,100), Form sem `/Resources` (5,5), Form com `/Matrix` 2× (20,20),
+`/Resources` **vazio** caindo no pai (o `or cur` do serial) e pool × serial.
+`PDFAGENT_DPI_SERIAL=1` para A/B.
+
 ### Rodada 18 — a 2ª coleta de fontes: 2,4 → 0,3 s (reuso por assinatura)
 
 A rodada 17 deixou 4,6 s em coleta, e **2,4 s eram da SEGUNDA chamada**.
