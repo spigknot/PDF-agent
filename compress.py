@@ -263,23 +263,27 @@ def _chave_fonte_pacote(fo):
 def _pacotes_recursos(pdf):
     """Empacota os /Resources em dicts picklables, na ordem de visita do walk.
 
-    Cada pacote: {"fontes": {nome: (chave, largura, objgen)}, "xobjs":
-    {nome: (bytes do Form, chave do /Resources filho)}}. O walk roda em outro
-    PROCESSO com esta estrutura — sem objeto pikepdf, nada de picklar a arvore
-    do qpdf. `refs` mantem os dicionarios DIRETOS vivos durante a montagem:
-    `id()` recicla e o memo colidiria (a mesma armadilha de `objgen == (0,0)`).
+    Cada pacote: {"rotulo": caminho estavel, "fontes": {nome: (chave, largura,
+    objgen)}, "xobjs": {nome: (bytes do Form, chave do /Resources filho)}}. O
+    walk roda em outro PROCESSO com esta estrutura — sem objeto pikepdf, nada de
+    picklar a arvore do qpdf. `refs` mantem os dicionarios DIRETOS vivos durante
+    a montagem: `id()` recicla e o memo colidiria.
+
+    `rotulo` = "p7" / "p7/Fm1/Fm2": identidade ESTAVEL do no' (ao contrario do
+    objgen de objeto direto e do `id()`), usada nos eventos do walk e na
+    assinatura da coleta.
 
     O memo e' GLOBAL por /Resources, como o `vistos_res` do walk serial: um
-    /Resources compartilhado por duas paginas e' visitado UMA vez. Filho que
-    cai no /Resources do pai (Form sem /Resources proprio) nao entra de novo —
-    no serial o walk retorna na hora e nao tokeniza esse Form.
+    /Resources compartilhado por duas paginas e' visitado UMA vez. Filho que cai
+    no /Resources do pai (Form sem /Resources proprio) nao entra de novo — no
+    serial o walk retorna na hora e nao tokeniza esse Form.
     """
     mapa = {}
     paginas = []          # (dados da pagina, chave do /Resources)
     fontes = {}           # chave -> objeto fonte (o principal resolve no replay)
     refs = []
 
-    def construir(res, prof=0):
+    def construir(res, rotulo, prof=0):
         if res is None or prof > 8:
             return None
         if not getattr(res, "is_indirect", False):
@@ -290,7 +294,7 @@ def _pacotes_recursos(pdf):
             return None
         if chave in mapa:
             return chave
-        pac = {"fontes": {}, "xobjs": {}}
+        pac = {"rotulo": rotulo, "fontes": {}, "xobjs": {}}
         mapa[chave] = pac            # registra antes de recursar (ciclo /Parent)
         try:
             entradas = dict(res.get("/Font", {}))
@@ -321,12 +325,12 @@ def _pacotes_recursos(pdf):
                 filho = xo.get("/Resources", res)
             except Exception:
                 filho = res
-            ck = construir(filho, prof + 1)
+            ck = construir(filho, "%s/%s" % (rotulo, nome), prof + 1)
             if ck is not None:
                 pac["xobjs"][str(nome)] = (sub, ck)
         return chave
 
-    for pagina in pdf.pages:
+    for pi, pagina in enumerate(pdf.pages):
         try:
             res = pagina.Resources
             dados = _bytes_conteudo(pagina)
@@ -335,7 +339,7 @@ def _pacotes_recursos(pdf):
         if not dados:
             continue
         try:
-            ck = construir(res)
+            ck = construir(res, "p%d" % pi)
         except Exception:
             continue
         if ck is not None:
@@ -350,10 +354,15 @@ def _walk_fontes_pacote(dados, chave, mapa, prof=0, vistos=None):
     de insercao de `por_obj`/`por_fonte` (que decide qual copia e' a canonica
     no merge de fontes):
 
-    - ("c", objgen): fonte citada em `Tf` (entra vazia; sem nenhum `Tj` ela
-      seria apagada do /Resources e a pagina ficaria sem fonte);
-    - ("a", chave, largura, blocos): fonte com `Tj`/`TJ`/`'`/`"` no res, com
-      os BYTES na ordem em que apareceram.
+    - ("c", rotulo, nome): fonte citada em `Tf` (entra vazia; sem nenhum `Tj`
+      ela seria apagada do /Resources e a pagina ficaria sem fonte);
+    - ("a", rotulo, nome, blocos): fonte com `Tj`/`TJ`/`'`/`"` no res, com os
+      BYTES na ordem em que apareceram.
+
+    O evento carrega o ROTULO do /Resources e o NOME da fonte, nunca o objeto
+    nem o objgen: quem resolve e' o processo principal, no pacote ATUAL. Assim a
+    mesma lista de eventos vale depois do merge de fontes (que muta o objeto no
+    lugar) e uma troca de objeto nao deixa chave morta no resultado.
 
     Os bytes viajam crus (nao um `set` de codigos) de proposito: a ordem de
     iteracao de um set de ints depende do historico de insercao, e o
@@ -369,6 +378,7 @@ def _walk_fontes_pacote(dados, chave, mapa, prof=0, vistos=None):
         return eventos
     vistos.add(chave)
     pac = mapa[chave]
+    rotulo = pac["rotulo"]
     fontes = pac["fontes"]
     achados = defaultdict(list)
     cur = None
@@ -387,10 +397,8 @@ def _walk_fontes_pacote(dados, chave, mapa, prof=0, vistos=None):
                         cur = p.decode("latin-1")
                         break
                 pend = []
-                if cur is not None:
-                    dado = fontes.get(cur)
-                    if dado is not None and dado[2] is not None:
-                        eventos.append(("c", dado[2]))
+                if cur is not None and cur in fontes:
+                    eventos.append(("c", rotulo, cur))
             elif val in (b"Tj", b"TJ", b"'", b'"') and cur is not None:
                 for tp, p in pend:
                     if tp in ("str", "hex"):
@@ -413,11 +421,9 @@ def _walk_fontes_pacote(dados, chave, mapa, prof=0, vistos=None):
             continue
         pend = []
     for nome, blocos in achados.items():
-        dado = fontes.get(nome)
-        if dado is None:
+        if nome not in fontes:
             continue
-        k, w, _cit = dado
-        eventos.append(("a", k, w, blocos))
+        eventos.append(("a", rotulo, nome, blocos))
     return eventos
 
 
@@ -425,6 +431,34 @@ def _fontes_pagina(args):
     """Worker: walk das fontes de UMA pagina sobre o pacote picklable."""
     dados, chave, mapa = args
     return _walk_fontes_pacote(dados, chave, mapa)
+
+
+def _assinatura_coleta(mapa, paginas, marca_pdf):
+    """Impressao digital de TUDO que o walk de fontes le'.
+
+    Cobre: bytes de cada pagina, o ROTULO de cada /Resources (caminho estavel,
+    nao `id()`), os nomes de fonte e os bytes de cada Form. Tudo o que o walk
+    le' esta' aqui — mudou a impressao, muda o resultado. `marca_pdf` (id do
+    Pdf) evita reaproveitar a coleta de outro documento.
+
+    Serve para a SEGUNDA coleta do mesmo documento: `_merge_subset_fontes`
+    aplica o subset MUTANDO o objeto de fonte no lugar (`/FontFile2`,
+    `/BaseFont`, `/CIDToGIDMap`) e nunca troca `/Resources` nem conteudo, entao
+    a impressao nao muda e os eventos anteriores continuam validos (o replay
+    resolve os nomes nos objetos ATUAIS).
+    """
+    estrutura = []
+    for pac in sorted(mapa.values(), key=lambda p: p["rotulo"]):
+        fontes = tuple(sorted(pac["fontes"]))
+        xobjs = tuple(sorted((nome, len(b), zlib.crc32(b), mapa[ck]["rotulo"])
+                             for nome, (b, ck) in pac["xobjs"].items()))
+        estrutura.append((pac["rotulo"], fontes, xobjs))
+    return (marca_pdf,
+            tuple((len(d), zlib.crc32(d)) for d, _c in paginas),
+            tuple(estrutura))
+
+
+_CACHE_COLETA = None      # (assinatura, eventos, refs) da ultima coleta
 
 
 def _usos_e_codigos(pdf):
@@ -444,10 +478,17 @@ def _usos_e_codigos(pdf):
     reconstroi `por_obj`/`por_fonte` na ordem do walk serial.
     """
     _t0 = _time.perf_counter()
+    global _CACHE_COLETA
     mapa, paginas, fontes, _refs = _pacotes_recursos(pdf)
     _t1 = _time.perf_counter()
+    assinatura = _assinatura_coleta(mapa, paginas, id(pdf))
     eventos = None
-    if paginas:
+    _de_cache = False
+    if (os.environ.get("PDFAGENT_FONTES_CACHE", "1") != "0"
+            and _CACHE_COLETA is not None and _CACHE_COLETA[0] == assinatura):
+        eventos = _CACHE_COLETA[1]     # nao precisa de `refs`: sem walk, sem `id()`
+        _de_cache = True
+    if eventos is None and paginas:
         # tarefa maior primeiro: o stream de 3,9 MB custa 1,1 s sozinho e
         # precisa COMECAR cedo, senao vira cauda do pool.
         ordem = sorted(range(len(paginas)), key=lambda i: -len(paginas[i][0]))
@@ -467,11 +508,13 @@ def _usos_e_codigos(pdf):
                 eventos = None
         if eventos is None:
             eventos = [_fontes_pagina((d, c, mapa)) for d, c in paginas]
+        _CACHE_COLETA = (assinatura, eventos)
     _t2 = _time.perf_counter()
 
     por_obj = defaultdict(set)
     saida = []
     por_fonte = {}
+    por_rotulo = {pac["rotulo"]: pac for pac in mapa.values()}
 
     def _og(chave):
         return (chave[1], chave[2]) if chave[0] == "i" else ("direto", chave[1])
@@ -479,9 +522,16 @@ def _usos_e_codigos(pdf):
     for lista in eventos or ():
         for ev in lista:
             if ev[0] == "c":
-                por_obj[ev[1]]       # objgen cru: cria a entrada vazia
+                _, rot, nome = ev
+                dado = por_rotulo[rot]["fontes"].get(nome)
+                if dado is not None and dado[2] is not None:
+                    por_obj[dado[2]]   # objgen cru: cria a entrada vazia
                 continue
-            _, k, w, blocos = ev
+            _, rot, nome, blocos = ev
+            dado = por_rotulo[rot]["fontes"].get(nome)
+            if dado is None:
+                continue
+            k, w, _cit = dado
             codigos = set()          # MESMA ordem de insercao do walk serial
             for b in blocos:
                 if w == 2:
@@ -497,8 +547,9 @@ def _usos_e_codigos(pdf):
             por_fonte[og] = [fontes[k], set(codigos), w]
             saida.append(por_fonte[og])
     if os.environ.get("PDFAGENT_DEBUG_TEMPO"):
-        print("    fontes: coleta pacotes %.2fs pool %.2fs replay %.2fs"
-              % (_t1 - _t0, _t2 - _t1, _time.perf_counter() - _t2))
+        print("    fontes: coleta pacotes %.2fs %s %.2fs replay %.2fs"
+              % (_t1 - _t0, "cache" if _de_cache else "pool", _t2 - _t1,
+                 _time.perf_counter() - _t2))
     return por_obj, saida
 
 

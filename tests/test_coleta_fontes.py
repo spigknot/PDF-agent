@@ -76,7 +76,15 @@ def _pdf(com_form=True):
     return pdf, f1, f2, f3, fora
 
 
-def _coleta(pdf, serial):
+def _coleta(pdf, serial, limpar=True):
+    """Roda a coleta; `limpar` zera o cache de eventos entre chamadas.
+
+    Sem `limpar`, a 2a chamada no MESMO pdf reaproveita os eventos (assinatura
+    igual) — e' o que os testes de cache exercitam; com `limpar`, cada caminho
+    e' medido de verdade (pool x serial).
+    """
+    if limpar:
+        compress._CACHE_COLETA = None
     if serial:
         os.environ["PDFAGENT_FONTES_SERIAL"] = "1"
     else:
@@ -141,6 +149,71 @@ def test_form_sem_resources_e_pulado_como_no_serial():
     assert codigos[f1.objgen] == {65, 66}, \
         "o Form herda o /Resources do pai, ja visitado: o walk pula o conteudo"
     assert codigos.get(fora.objgen) == set()
+    pdf.close()
+
+
+def test_coleta_reaproveita_quando_nada_muda():
+    """2a coleta no mesmo pdf usa os eventos da 1a (assinatura identica).
+
+    E' o que faz a coleta do `_consolida_fontes` (pos-merge) custar 0,3 s em
+    vez de 2,4 s. O teste olha a IDENTIDADE da lista de eventos: se o cache
+    parar de acertar, os objetos mudam e ele falha.
+    """
+    pdf, _f1, _f2, _f3, _fora = _pdf()
+    a = _retrato(*_coleta(pdf, serial=False, limpar=True))
+    eventos_1 = compress._CACHE_COLETA[1]
+    b = _retrato(*_coleta(pdf, serial=False, limpar=False))
+    assert compress._CACHE_COLETA[1] is eventos_1, "a 2a coleta tem de vir do cache"
+    assert a == b, "reaproveitar nao pode mudar o resultado"
+    pdf.close()
+
+
+def test_coleta_ve_conteudo_novo():
+    """Conteudo diferente no MESMO pdf invalida o cache."""
+    pdf, f1, _f2, _f3, _fora = _pdf()
+    antes = _retrato(*_coleta(pdf, serial=False, limpar=True))
+    eventos_1 = compress._CACHE_COLETA[1]
+    pagina = pdf.pages[0]
+    pagina.obj["/Contents"] = pdf.make_stream(b"BT /F1 12 Tf (ABQ) Tj ET")
+    depois = _coleta(pdf, serial=False, limpar=False)[0]
+    assert compress._CACHE_COLETA[1] is not eventos_1, "conteudo novo = cache novo"
+    assert depois[f1.objgen] == {65, 66, ord("Q")}
+    assert _retrato(*_coleta(pdf, serial=True, limpar=True))[0] != antes[0]
+    pdf.close()
+
+
+def test_coleta_ve_troca_de_objeto_de_fonte():
+    """/Resources apontando para OUTRO objeto de fonte: a chave acompanha.
+
+    E' o caso que impede o cache de devolver objgen morto: o evento guarda o
+    rotulo + nome, e o replay resolve no pacote atual.
+    """
+    pdf, f1, _f2, _f3, _fora = _pdf()
+    antes = _coleta(pdf, serial=False, limpar=True)[0]
+    assert antes[f1.objgen] == {65, 66}
+    novo = _fonte(pdf, "/F1")
+    for pagina in pdf.pages:               # todas compartilham o mesmo /Resources
+        pagina.obj["/Resources"]["/Font"]["/F1"] = novo
+    depois = _coleta(pdf, serial=False, limpar=False)[0]
+    assert depois[novo.objgen] == {65, 66}, "a coleta tem de ver o objeto NOVO"
+    assert depois.get(f1.objgen) is None, "o objgen antigo nao pode sobreviver"
+    pdf.close()
+
+
+def test_campos_mutados_no_lugar_nao_invalidam():
+    """Mutar /BaseFont no lugar (o que o merge faz) mantem a coleta valida.
+
+    `_merge_subset_fontes` fase 3 grava /FontFile2, /BaseFont e /CIDToGIDMap no
+    MESMO objeto — nada de /Resources nem conteudo. Se algum dia passar a
+    trocar o objeto, `test_coleta_ve_troca_de_objeto_de_fonte` pega.
+    """
+    pdf, f1, _f2, _f3, _fora = _pdf()
+    antes = _retrato(*_coleta(pdf, serial=False, limpar=True))
+    eventos_1 = compress._CACHE_COLETA[1]
+    f1["/BaseFont"] = Name("/ZZZ+Mutado")
+    depois = _retrato(*_coleta(pdf, serial=False, limpar=False))
+    assert compress._CACHE_COLETA[1] is eventos_1, "mutacao no lugar nao invalida"
+    assert antes == depois
     pdf.close()
 
 

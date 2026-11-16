@@ -628,6 +628,47 @@ Duas correções de fidelidade/velocidade que saíram junto:
   escrita da máscara é a única parte móvel de thread — provado que o teste
   falha se ela for desligada).
 
+### Rodada 18 — a 2ª coleta de fontes: 2,4 → 0,3 s (reuso por assinatura)
+
+A rodada 17 deixou 4,6 s em coleta, e **2,4 s eram da SEGUNDA chamada**.
+`_codigos_por_fonte` é chamado de novo por `_consolida_fontes`, que precisa
+saber quais fontes são realmente usadas — e roda depois do merge.
+
+**A observação que resolveu:** a fase 3 de `_merge_subset_fontes` grava
+`/FontFile2`, `/BaseFont` e `/CIDToGIDMap` **no mesmo objeto de fonte**; não
+troca `/Resources` nem conteúdo. Entre as duas coletas, portanto, tudo o que o
+walk lê é idêntico — só os objetos de fonte mudam por dentro.
+
+Duas mudanças:
+
+1. O evento do walk passou a carregar o **rótulo do `/Resources`** (caminho
+   estável, `"p7/Fm1"`) e o **nome** da fonte, nunca o objgen. Quem resolve é o
+   processo principal, no pacote ATUAL — a mesma lista de eventos vale para
+   qualquer objeto de fonte, e um objgen trocado não deixa chave morta.
+2. `_assinatura_coleta` = (id do `Pdf`, tamanho+crc32 de cada página, e por
+   rótulo: nomes de fonte + nome/tamanho/crc32/rótulo-filho de cada Form). Se a
+   assinatura bate, os eventos são reaproveitados.
+
+| | antes | depois |
+|---|---|---|
+| coleta, 2ª chamada | 2,4 s | **0,3 s** |
+| coleta, 1ª chamada | 2,2 s | 2,2 s (assinatura inclusa: ~0,1 s) |
+
+**Duas armadilhas pagas aqui:**
+
+- A primeira assinatura usava as CHAVES do memo (objgen/`id()`).
+  `pagina.Resources` devolve um wrapper novo a cada chamada, então o `id()` de
+  dicionário direto muda entre duas coletas do MESMO arquivo — a assinatura
+  nunca batia. O caminho (`"p7/Fm1"`) é estável; o `id()` segue servindo só para
+  o dedup DENTRO de uma coleta.
+- A assinatura lista NOMES de fonte e bytes, não objgens: foi o que fez a troca
+  de objeto de fonte (`test_coleta_ve_troca_de_objeto_de_fonte`) ser detectada
+  pelo resultado, e não silenciosamente herdada do cache.
+
+**Vacinas** (`tests/test_coleta_fontes.py`, 7 testes): reuso quando nada muda,
+invalidação por conteúdo novo, troca de objeto de fonte e mutação no lugar (a
+que o merge faz). `PDFAGENT_FONTES_CACHE=0` desliga o reuso para A/B.
+
 ### Rodada 17 — coleta de fontes em processos (71,7 → 67,1 s)
 
 `_usos_e_codigos` custava 8,4 s dos 71,7 e a instrumentação dizia exatamente
