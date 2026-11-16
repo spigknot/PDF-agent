@@ -12,7 +12,7 @@
 | recommended | **11.382.226 B** | 12.227.010 (93,09%) |
 | extreme | 8.651.585 B | 9.275.878 (93,27%) |
 | low | 14.884.111 B | 16.565.289 (89,85%) |
-| tempo recommended | **67,1 s** na 17; a 18 tirou **2,1 s** da 2ª coleta (2,4 → 0,3 s) | ~60 s |
+| tempo recommended | **61,8 s** (mediana de 3; A/B na mesma sessão com `PDFAGENT_FONTES_CACHE=0`: 64,9 s) | ~60 s |
 | texto | 0/376 (extreme 3/376, bug do extrator) | 0/376 |
 | render vs **original** | média 0,3131%, pior 8,67% (pg218) | pior 12,76% (motor é pior) |
 | gate | **PASS** — 0/3 + 0/21 + "coleta de fontes (pool x serial)" | — |
@@ -21,15 +21,17 @@ Branch `paridade/rodada-5`, árvore limpa. Rodadas 17-18: coleta de fontes em
 processos (8,7 → 2,2 s) e reuso da coleta por assinatura (2ª chamada 2,4 →
 0,3 s), com a saída estruturalmente idêntica.
 
-**Mediana oficial da 18:** pendente — a validação rodou com uma rodada NPU do
-SIG usando ~4 núcleos. Medir com `py -3.11 scripts/mede_tempo.py recommended 3
---fases` em máquina ociosa (esperado ~65 s).
+**Mediana oficial da 18:** **61,8 s** (61,8 / 61,8 / 63,0; espalhamento 1,2 s) em
+máquina ociosa, mesmo script. A/B com `PDFAGENT_FONTES_CACHE=0` (comportamento
+da 17) na MESMA sessão: **64,9 s** (64,3 / 64,9 / 65,2) — o ganho isolado da
+rodada é 3,1 s; a diferença entre 67,1 e 64,9 é estado da máquina, não código.
 
-**Próxima rodada (19) — o que sobrou, medido:** imagens 31,3 s (piso de
+**Próxima rodada (19) — o que sobrou, medido:** imagens 31,2 s (piso de
 núcleos: ~500 s de CPU em 24 processos), `_normaliza_conteudo` 14,4 s (piso do
 parse+reescrita; parser próprio foi descartado na rodada 12), subset ~3 s, save
 ~5 s, coleta 2,5 s. Depois das rodadas 17-18 não há mais alavanca grande: só
-mexer em imagens (que já é 16x em 24 workers) ou no save.
+mexer em imagens (que já é 16x em 24 workers) ou no save. Faltam ~2 s para o
+motor (~60 s).
 
 **Ferramentas que economizam tempo:**
 - `PDFAGENT_DEBUG_TEMPO=1` → tempo por fase, com "fontes: coleta pacotes X

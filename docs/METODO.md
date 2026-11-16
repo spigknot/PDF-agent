@@ -653,6 +653,7 @@ Duas mudanças:
 |---|---|---|
 | coleta, 2ª chamada | 2,4 s | **0,3 s** |
 | coleta, 1ª chamada | 2,2 s | 2,2 s (assinatura inclusa: ~0,1 s) |
+| **total recommended** | 64,9 s (com `PDFAGENT_FONTES_CACHE=0`, mesma sessão) | **61,8 s** (mediana de 3; espalhamento 1,2 s) |
 
 **Duas armadilhas pagas aqui:**
 
