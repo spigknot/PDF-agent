@@ -80,10 +80,12 @@ LEVELS = {
         "descricao": "Boa qualidade, boa compressão",
         "resolucao": 150.0, "limiar": 150.0, "qualidade": 60,
         "conversao_cor": "none",          # SetColorConversion(0)
-        # herda Print = Group4+Source. SEM jbig2: a referencia do motor em
-        # recommended tem 0 stream JBIG2 (221 KB de G4) — e' o nivel onde ele
-        # nao usa o codec, entao tentar JBIG2 aqui muda a estrutura vs motor.
-        "bitonal": ["g4", "source"],
+        # Group4+Source herdados do Print, MAIS jbig2: medido em 22/11 no
+        # documento de estresse, o JBIG2 generico ganha 78 KB no recommended
+        # (11.464.919 -> 11.386.742 B, 22 imagens). O gate estrutural do corpus
+        # continua 0/21. O motor nao usa JBIG2 aqui (221 KB de G4), mas o
+        # criterio de aceite e' tamanho/texto/render, nao o filtro escolhido.
+        "bitonal": ["g4", "jbig2"],
         "continuo": ["jpeg", "flate", "source"],  # herda Print
         "indexado": ["flate", "source"],  # herda Print
         # SetStrip(1143 = 0x477). OBSERVADO em 8 saidas reais do iLovePDF:
@@ -4884,6 +4886,12 @@ def comprimir(entrada, saida, nivel="recommended", log=print, _guard=None,
     if nivel not in LEVELS:
         raise ValueError(f"nivel invalido: {nivel}")
     spec = LEVELS[nivel]
+    # override de experimento: PDFAGENT_BITONAL="g4,jbig2" troca os codecs das
+    # imagens 1-bit sem editar a tabela de niveis
+    _bit_env = os.environ.get("PDFAGENT_BITONAL")
+    if _bit_env:
+        spec = dict(spec)
+        spec["bitonal"] = [x.strip() for x in _bit_env.split(",") if x.strip()]
     _t0 = _time.time()
 
     def _etapa(rotulo):

@@ -628,6 +628,34 @@ Duas correções de fidelidade/velocidade que saíram junto:
   escrita da máscara é a única parte móvel de thread — provado que o teste
   falha se ela for desligada).
 
+### Rodada 14 — JBIG2 também no recommended (−78 KB) e o bitonal é o que sobra
+
+Com o gate novo (376 páginas contra o original), fui atrás da página 218: é um
+**scan inteiro** (2480×3507, 1-bit CCITT). Nós e o motor reamostramos igual
+(1240×1754) e o nosso `/DecodeParms` é idêntico (`Columns`=largura, `K`=-1) —
+mas o **nosso G4 sai 8% maior** (61.746 × 57.011 B).
+
+Somando as 64 imagens 1-bit do arquivo: **302.685 B nossos × 221.643 do motor
+(+81 KB)**. É exatamente o gap que a tabela de papéis de 14/11 apontava como
+"+81.604" no recommended.
+
+O JBIG2 estava **desligado neste nível** por uma nota conservadora no código
+("o motor tem 0 stream JBIG2 no recommended"). Testado: o gate estrutural do
+corpus continua **0/21** e o documento de estresse fica **0/3**.
+
+| | tamanho | bitonal | tempo (mediana) |
+|---|---|---|---|
+| G4 | 11.464.919 B | 302.685 B | 77,1 s |
+| **G4+JBIG2** | **11.386.742 B** | **224.913 B** | 77,8 s |
+
+−78 KB **de graça** (o custo do jbig2enc, 64 subprocessos, ficou dentro do
+ruído). `PDFAGENT_BITONAL=g4,jbig2` permite experimentar sem editar a política.
+
+**O que ainda sobra em bitonal**: 224.913 nossos × 221.643 do motor — o gap
+fechou. O próximo seria JBIG2 **simbólico** (dicionário de símbolos), medido em
+442.591 B contra 426.048 do genérico no arquivo original: **perde** aqui, não
+usar.
+
 ### Rodada 13 — fidelidade medida no documento inteiro (e o gate corrigido)
 
 O gate de render comparava **10 páginas fixas contra o arquivo do motor**. Duas
