@@ -1,9 +1,47 @@
 # HANDOFF — CompressPDF × iLovePDF
 
 > Prompt de continuidade. Cole num agente novo para retomar sem perder contexto.
-> Estado em: 13 rodadas de investigação concluídas.
+> Estado em: 16 rodadas de investigação concluídas.
 
 ---
+
+## ESTADO ATUAL (fim da rodada 16, 22/11)
+
+| métrica | valor | referência (motor) |
+|---|---|---|
+| recommended | **11.382.226 B** | 12.227.010 (93,09%) |
+| extreme | 8.651.585 B | 9.275.878 (93,27%) |
+| low | 14.884.111 B | 16.565.289 (89,85%) |
+| tempo recommended | **71,7 s** (mediana de 3) | ~60 s |
+| texto | 0/376 (extreme 3/376, bug do extrator) | 0/376 |
+| render vs **original** | média 0,3131%, pior 8,67% (pg218) | pior 12,76% (motor é pior) |
+| gate | **PASS** — 0/3 + 0/21 (estresse em 118 s) | — |
+
+Branch `paridade/rodada-5`, árvore limpa. Últimos commits: `723514e` (clip em
+processos), `2281033` (kernel bitonal LANCZOS), `6f5ab9d` (JBIG2 no recommended).
+
+**Próxima rodada (17), com plano pronto:**
+`.hermes/plans/2026-11-22_rodada17-coleta-paralela.md` — paralelizar
+`_usos_e_codigos` (8,4 s dos 71,7). O obstáculo medido são os **1.162 Form
+XObjects** em que o walk recursa.
+
+**Ferramentas que economizam tempo:**
+- `PDFAGENT_DEBUG_TEMPO=1` → tempo por fase (o mapa que revelou o gargalo real).
+- `scripts/mede_tempo.py recommended 3 --fases` → mediana/média/espalhamento.
+- `COMPRESSPDF_MERGE=0`, `COMPRESSPDF_CASAS=N`,
+  `PDFAGENT_KERNEL_BITONAL`, `PDFAGENT_BITONAL`, `PDFAGENT_PROC_*` → A/B sem
+  editar código (tabela completa em `docs/COMANDOS.md` §4b).
+
+**Duas lições que custaram rodadas inteiras:**
+1. O gate de render comparava com o **motor**; o correto é o **original** — em
+   22 páginas somos mais fiéis que ele. E cobria 10 páginas fixas, escondendo a
+   pior (pg218).
+2. Paralelizar o parser **que já existe** é seguro; trocar por um equivalente
+   (ou filtrar operadores) desalinha índices usados em outra etapa — foi 2/21 no
+   gate.
+
+---
+
 
 ## Objetivo do projeto
 
