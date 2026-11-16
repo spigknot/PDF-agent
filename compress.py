@@ -54,7 +54,7 @@ _sem_risco_kernel = False
 _CLIPADOS = set()
 
 # Versao do aplicativo (mostrada por --version e usada no build do .exe)
-VERSAO = "1.0.0"
+VERSAO = "1.1.0"
 
 LEVELS = {
     # Low (0): base = perfil Default (tudo desligado) + overrides abaixo.
@@ -5505,11 +5505,13 @@ def comprimir(entrada, saida, nivel="recommended", log=print, _guard=None,
         log(_etapa(f"[3] imagens: {trocadas}/{total} recomprimidas"))
         log("    tempo imagem: paginas %.1fs, prepara %.1fs (decode %.1fs), "
             "pool %.1fs (encode %.1fs), espera %.1fs, aplicar %.1fs "
-            "[%d threads, janela %d]"
+            "[%s, janela %d]"
             % (_TEMPO_IMG.get("paginas", 0.0), _TEMPO_IMG.get("prepara", 0.0),
                _TEMPO_IMG.get("decode", 0.0), _TEMPO_IMG.get("puro", 0.0),
                _TEMPO_IMG.get("encode", 0.0), _TEMPO_IMG.get("espera", 0.0),
-               _TEMPO_IMG.get("aplica", 0.0), _largura_pool(), janela))
+               _TEMPO_IMG.get("aplica", 0.0),
+               ("%d processos" % _nproc) if _nproc > 1
+               else "%d threads" % _largura_pool(), janela))
         log("    tempo imagem: laco %.1fs (soma dos contadores %.1fs)"
             % (_TEMPO_IMG.get("laco", 0.0),
                _TEMPO_IMG.get("paginas", 0.0) + _TEMPO_IMG.get("prepara", 0.0)

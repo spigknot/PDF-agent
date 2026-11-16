@@ -85,7 +85,7 @@ O `CompressPDF.bat` usa o `dist\PDFagent.exe` quando ele existe e cai para
 "C:\Users\<voce>\AppData\Local\Programs\Inno Setup 6\ISCC.exe" instalador\PDFagent.iss
 ```
 
-Gera `dist\PDFagent-Setup-1.0.0.exe` (per-usuário, **não pede admin**). Duas
+Gera `dist\PDFagent-Setup-<versao>.exe` (per-usuário, **não pede admin**). Duas
 opções vêm marcadas:
 
 - **Adicionar ao PATH do usuário** → `PDFagent` fica chamável no terminal;
