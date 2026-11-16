@@ -1369,8 +1369,24 @@ def _processa_job(job):
     if job["reamostra"]:
         if bitonal:
             # 1-bit: NEAREST preserva bordas duras (LANCZOS gera franja
-            # cinza que vira speckle no G4 — 12x maior)
-            img = img.convert("1").resize((alvo_w, alvo_h), Image.NEAREST)
+            # cinza que vira speckle no G4 — 12x maior). PDFAGENT_KERNEL_BITONAL
+            # permite testar reducao em cinza + binarizacao (preserva AREA, o
+            # que teoricamente aproxima do original reduzido).
+            # Default LANCZOS (medido em 22/11, 376 paginas): reduzir em cinza
+            # e binarizar e' MAIS fiel que NEAREST e ainda rende 4,5 KB a menos.
+            #   kernel   pg218  pg117  media geral  bytes
+            #   nearest  9,60%  4,61%  0,3248%      11.386.742
+            #   box     10,80%  4,87%  0,3312%      11.379.405
+            #   lanczos  8,67%  3,72%  0,3131%      11.382.226
+            _kb = os.environ.get("PDFAGENT_KERNEL_BITONAL", "lanczos").lower()
+            if _kb == "nearest":
+                img = img.convert("1").resize((alvo_w, alvo_h), Image.NEAREST)
+            else:
+                _kk = {"box": Image.BOX, "bilinear": Image.BILINEAR,
+                       "bicubic": Image.BICUBIC}.get(_kb, Image.LANCZOS)
+                _lim = int(os.environ.get("PDFAGENT_BITONAL_LIMIAR", "128"))
+                img = (img.convert("L").resize((alvo_w, alvo_h), _kk)
+                       .point(lambda x: 255 if x > _lim else 0, "1"))
         else:
             if img.mode not in ("RGB", "L", "CMYK"):
                 img = img.convert("RGB")

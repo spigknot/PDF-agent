@@ -628,6 +628,33 @@ Duas correções de fidelidade/velocidade que saíram junto:
   escrita da máscara é a única parte móvel de thread — provado que o teste
   falha se ela for desligada).
 
+### Rodada 15 — o kernel do bitonal: LANCZOS é mais fiel E menor
+
+A página 218 (9,6% de render vs original) é um **scan de página inteira**
+(2480×3507, 1-bit CCITT). Nós e o motor reamostramos para 1240×1754, com
+`/DecodeParms` idênticos (`Columns`=largura, `K`=-1) — a diferença estava no
+**kernel**: usávamos `Image.NEAREST` num downsample 2:1, que descarta 3 de cada
+4 pixels.
+
+Medido nas 376 páginas (`PDFAGENT_KERNEL_BITONAL`):
+
+| kernel | pg218 | pg117 | pg132 | pg116 | média geral | bytes |
+|---|---|---|---|---|---|---|
+| `nearest` | 9,60% | 4,61% | 3,97% | 4,35% | 0,3248% | 11.386.742 |
+| `box` | 10,80% | 4,87% | 4,55% | 4,72% | 0,3312% | 11.379.405 |
+| **`lanczos`** | **8,67%** | **3,72%** | **3,42%** | **3,81%** | **0,3131%** | **11.382.226** |
+
+O LANCZOS — redução em cinza (`L`) e binarização depois com limiar 128 — é
+**mais fiel nas quatro páginas, melhor na média e 4,5 KB menor**, e o tempo cai
+de 77,8 s para **76,1 s** (imagem menor, encode mais rápido). Virou default;
+`PDFAGENT_BITONAL_LIMIAR` ajusta o limiar.
+
+**Lição:** o comentário antigo no código dizia que LANCZOS "gera franja cinza
+que vira speckle no G4 — 12x maior". Era verdade para o caminho antigo
+(LANCZOS direto numa imagem já `1`); convertendo para cinza **antes** e
+binarizando **depois** o resultado é menor e mais fiel. O comentário estava
+certo sobre o fenômeno e errado sobre a conclusão.
+
 ### Rodada 14 — JBIG2 também no recommended (−78 KB) e o bitonal é o que sobra
 
 Com o gate novo (376 páginas contra o original), fui atrás da página 218: é um
