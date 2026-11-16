@@ -93,7 +93,7 @@ Nenhuma é obrigatória; todas têm default seguro.
 | `PDFAGENT_PROC_NORM` | `1` | `0` roda `_normaliza_conteudo` em série (medido: 37,9 s serial × 14,9 s em pool) |
 | `PDFAGENT_FONTES_SERIAL` | desligado | `1` roda a coleta de fontes no processo principal (o pool é o default: 8,5 → 2,3 s). Serve de A/B e é o que o teste de equivalência usa |
 | `PDFAGENT_FONTES_CACHE` | `1` | `0` desliga o reuso da coleta quando nada mudou (a 2ª coleta do documento, pós-merge, cai de ~2,4 s para ~0,3 s). Só para A/B |
-| `PDFAGENT_DPI_SERIAL` | desligado | `1` roda o mapa de DPI no processo principal (o pool é o default: 2,8 → 1,7 s). Só para A/B |
+| `PDFAGENT_DPI_SERIAL` | desligado | `1` tira o DPI da passada do clip (que é o default desde a rodada 20) e o roda em série, no processo principal. Serve de A/B e de fallback |
 | `PDFAGENT_JANELA` | = workers de processo | quantas imagens ficam em voo. **Se ficar menor que os workers, o pool fica ocioso** |
 | `PDFAGENT_THREADS` | `8` | threads do pool de fallback (quando processo está desligado) |
 | `PDFAGENT_LOTE_FONTE` | `8` | fontes por tarefa no subset em lote |

@@ -1,55 +1,60 @@
 # HANDOFF — CompressPDF × iLovePDF
 
 > Prompt de continuidade. Cole num agente novo para retomar sem perder contexto.
-> Estado em: 19 rodadas de investigação concluídas.
+> Estado em: 20 rodadas de investigação concluídas.
 
 ---
 
-## ESTADO ATUAL (fim da rodada 19, 22/11)
+## ESTADO ATUAL (fim da rodada 20, 22/11)
 
 | métrica | valor | referência (motor) |
 |---|---|---|
 | recommended | **11.382.226 B** | 12.227.010 (93,09%) |
 | extreme | 8.651.585 B | 9.275.878 (93,27%) |
 | low | 14.884.111 B | 16.565.289 (89,85%) |
-| tempo recommended | **62,1 s** (A/B de 7 pares alternados; v18: 63,6 s) — Δ −1,16 s médio; melhor janela já medida: 61,8 s | ~60 s |
+| tempo recommended | **62,1 s** (8 pares alternados; v19: 62,6 s; min 60,9) | ~60 s |
 | texto | 0/376 (extreme 3/376, bug do extrator) | 0/376 |
 | render vs **original** | média 0,3131%, pior 8,67% (pg218) | pior 12,76% (motor é pior) |
-| gate | **PASS** — 0/3 + 0/21 + "coleta de fontes" e "DPI efetivo" | — |
+| gate | **PASS** — 0/3 + 0/21 + "coleta de fontes" e "DPI efetivo" (6 testes) | — |
 
-Branch `paridade/rodada-5`, árvore limpa. Rodadas 17-19: coleta de fontes em
-processos, reuso da coleta por assinatura e DPI em processos — a saída segue
-estruturalmente idêntica em todas.
+Branch `paridade/rodada-5`, árvore limpa. Rodadas 17-20: coleta de fontes em
+processos, reuso por assinatura, DPI em processos e DPI dentro da passada do
+clip — a saída segue estruturalmente idêntica em todas.
 
-**Atenção ao medir:** o run completo varia ±2 s entre janelas da máquina (o
-mesmo código mediu 61,8 s às 11:21 e 64-66 s às 11:40). Para comparar mudanças,
-use **A/B intercalado na mesma sessão** (é o que a rodada 19 fez) ou a fase
-isolada com `PDFAGENT_*_SERIAL=1`.
+**A rodada 20 quase foi revertida:** o merge do DPI no clip rendeu só **−0,35 s**
+(0,6%) e introduziu um bug que o gate pegou (2/21: o DPI precisa ser o estado
+PÓS-clip, porque o clip reescreve o `cm` e recorta os pixels). Corrigido e
+vacinado (`test_dpi_e_recalculado_depois_do_clip`); fica pelo spawn de pool que
+economiza. Se quiser o código mínimo: `git revert` do commit da rodada 20 devolve
+a 19 inteira, sem perda de qualidade de saída.
 
-**Próxima rodada (20), se quiser o último segundo:** unificar o DPI com o clip —
-o clip já parseia a página e sobra o spawn (~0,7 s) + o parse (~1,2 s). Exige
-mexer em `_coleta_draws`/`_aplica_clip_imagens`, caminho que guarda
-`cm_idx`/`do_idx`; a rodada 19 descartou pelo risco. Depois disso o perfil é
-piso: imagens 30,7 s (16× em 24 workers), normalização 14,4 s, subset ~3 s,
-save ~5,5 s.
+**Atenção ao medir:** o run completo varia ±2 s entre janelas. Compare mudanças
+com **A/B alternado no mesmo momento** (binário antigo × novo, um após o outro)
+ou pela fase instrumentada; medianas de sessões diferentes mentem.
+
+**Onde está o tempo agora (medido):** imagens ~30 s (piso de núcleos: ~500 s de
+CPU em 24 workers), `normaliza_conteudo` 14,4 s, clip+DPI 5,7 s, coleta de
+fontes 2,5 s, subset ~3 s, save ~5,5 s. **Não há mais alavanca grande
+conhecida:** o que sobra é piso de CPU ou exigiria parser próprio (descartado na
+rodada 12 por quebrar a paridade byte a byte com o motor).
 
 **Ferramentas que economizam tempo:**
 - `PDFAGENT_DEBUG_TEMPO=1` → tempo por fase, com "fontes: coleta pacotes X
-  (cache|pool) Y replay Z" e "dpi: pacotes X, pool|serial Y".
-- `scripts/mede_tempo.py recommended 3 --fases` → mediana (cuidado com a deriva
-  entre sessões: intercale os modos).
+  (cache|pool) Y replay Z" e "dpi: ... (do clip)".
+- `scripts/mede_tempo.py recommended 3 --fases` → mediana (cuidado com a deriva).
 - `COMPRESSPDF_MERGE=0`, `COMPRESSPDF_CASAS=N`, `PDFAGENT_FONTES_SERIAL=1`,
-  `PDFAGENT_FONTES_CACHE=0`, `PDFAGENT_DPI_SERIAL=1`,
-  `PDFAGENT_KERNEL_BITONAL`, `PDFAGENT_BITONAL`, `PDFAGENT_PROC_*` → A/B sem
-  editar código (`docs/COMANDOS.md` §4b).
+  `PDFAGENT_FONTES_CACHE=0`, `PDFAGENT_DPI_SERIAL=1` (força o DPI fora do clip e
+  em série), `PDFAGENT_KERNEL_BITONAL`, `PDFAGENT_BITONAL`,
+  `PDFAGENT_PROC_*` → A/B sem editar código (`docs/COMANDOS.md` §4b).
 
-**Cinco lições que custaram rodadas inteiras:**
+**Seis lições que custaram rodadas inteiras:**
 1. O gate de render comparava com o **motor**; o correto é o **original** — em
    22 páginas somos mais fiéis a ele. E cobria 10 páginas fixas, escondendo a
    pior (pg218).
 2. Paralelizar o parser **que já existe** é seguro; trocar por um equivalente
    (ou filtrar operadores) desalinha índices usados em outra etapa — foi 2/21 no
-   gate.
+   gate. Quando duas fases leem a mesma página, **junte as passadas sem trocar
+   os parsers** (rodada 20).
 3. Não atravessar `set` de códigos entre processos: a ORDEM DE ITERAÇÃO depende
    do histórico de inserção, e `_cod2glifo` numera glifos iterando esse set — o
    arquivo saía 20 B diferente com conjuntos iguais. `sorted()` esconde isso;
@@ -62,6 +67,17 @@ save ~5,5 s.
    com um mapa de 0,58 MB ficou **2,6× mais lento** que mandar o mapa em cada
    tarefa (6,30 × 2,38 s), e `chunksize=4` também perdeu (4,65 s) por
    desbalancear tarefas de tamanhos muito diferentes.
+6. Antes de otimizar por dedução, **prove a equivalência** (draws campo a campo,
+   mapa de DPI imagem por imagem) e só então meça tempo — foi assim que a
+   rodada 20 mexeu no caminho `cm_idx` sem quebrar o índice.
+7. Ao fundir duas fases numa passada só, pergunte **se a segunda lê algo que a
+   primeira ESCREVE**: o clip reescreve o `cm` e recorta pixels, então o DPI
+   efetivo tem de ser medido no estado PÓS-clip (a versão pré-clip passou 2/21
+   no gate). E prove contra o caminho antigo **no arquivo final**, não só nas
+   estruturas intermediárias.
+8. Em A/B de tempo, **alterne qual binário roda primeiro** e desconfie de um
+   resultado bonito: 4 pares davam −2,18 s; com a ordem invertida em metade dos
+   pares e o código corrigido, o Δ real caiu para −0,35 s.
 
 
 ---

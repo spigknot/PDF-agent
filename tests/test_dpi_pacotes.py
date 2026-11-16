@@ -55,8 +55,8 @@ def _pdf(recursos_vazios=False):
          /Fm2 Do                     -> Fm2 (/Matrix 2x) desenha Im2 a 20
     """
     pdf = pikepdf.new()
-    im1 = _imagem(pdf, 100)
-    im2 = _imagem(pdf, 200)
+    im1 = _imagem(pdf, 100, 200)
+    im2 = _imagem(pdf, 200, 200)
     if recursos_vazios:
         rec_fm = pikepdf.Dictionary()          # vazio: tem de cair no pai
     else:
@@ -115,6 +115,67 @@ def test_pool_e_serial_dao_o_mesmo_mapa():
     pool = _mapa(pdf, serial=False)
     assert {k: list(v) for k, v in serial.items()} == \
         {k: list(v) for k, v in pool.items()}
+    pdf.close()
+
+
+def test_clip_devolve_o_mesmo_dpi():
+    """A passada do clip (rodada 20) devolve o MESMO mapa do caminho isolado.
+
+    Sem nada recortado, o DPI do clip tem de ser igual ao calculado sobre o
+    mesmo pdf (que ainda nao foi mexido).
+    """
+    pdf, _im1, _im2 = _pdf()
+    draws, dpi_paginas, _pacotes = compress._coleta_draws(pdf)
+    do_clip = compress._tamanhos_na_pagina(pdf, dpi_paginas)
+    isolado = compress._tamanhos_na_pagina(pdf)
+    assert draws, "a passada do clip tem de achar os draws das imagens"
+    assert {k: list(v) for k, v in do_clip.items()} == \
+        {k: list(v) for k, v in isolado.items()}, \
+        "DPI do clip x isolado tem de ser identico"
+    pdf.close()
+
+
+def test_dpi_e_recalculado_depois_do_clip():
+    """O clip muda `cm` e recorta pixels: o DPI tem de ser o POS-clip.
+
+    Bug real da rodada 20 (2/21 no gate): o DPI coletado antes do clip dizia
+    que a imagem era desenhada a 200x100 pt; depois do recorte ela e' 50x50.
+    O otimizador so' ve' o estado pos-clip — usar o mapa antigo reamostrava
+    errado (NS8002: 787 px de altura contra 655 da referencia).
+    """
+    pdf, im1, _im2 = _pdf()
+    compress._CLIPADOS.clear()
+    pagina = pdf.pages[0]
+    # recorte de 50x50 sobre a imagem desenhada a 200x100
+    pagina.obj["/Contents"] = pdf.make_stream(
+        b"q 0 0 50 50 re W n q 200 0 0 100 0 0 cm /Im1 Do Q Q")
+    usos_clip = compress._tamanhos_na_pagina(pdf, compress._aplica_clip_imagens(
+        pdf, lambda m: None))
+    assert compress._CLIPADOS, "o clip tinha de ter recortado a imagem"
+    assert usos_clip[im1.objgen] == [(50.0, 50.0)], \
+        "depois do recorte o desenho e' 50x50 pt, nao 200x100"
+    pos = compress._tamanhos_na_pagina(pdf)
+    assert {k: list(v) for k, v in usos_clip.items()} == \
+        {k: list(v) for k, v in pos.items()}, \
+        "o mapa do clip tem de bater com o pos-clip medido do zero"
+    compress._CLIPADOS.clear()
+    pdf.close()
+
+
+def test_indices_dos_draws_apontam_para_cm_e_do():
+    """`cm_idx`/`do_idx` caem em `cm`/`Do` no parse SEM filtro da pagina.
+
+    E' a invariante que a rodada 16 pagou caro para aprender (2/21 no gate): o
+    clip reparseia a pagina e edita aquelas POSICOES.
+    """
+    pdf, _im1, _im2 = _pdf()
+    draws, _dpi, _pacotes = compress._coleta_draws(pdf)
+    assert draws
+    for d in draws:
+        instrucoes = list(pikepdf.parse_content_stream(pdf.pages[d["pagina"]]))
+        assert str(instrucoes[d["do_idx"]][1]) == "Do", "do_idx nao aponta um Do"
+        if d["cm_idx"] is not None:
+            assert str(instrucoes[d["cm_idx"]][1]) == "cm", "cm_idx nao aponta um cm"
     pdf.close()
 
 

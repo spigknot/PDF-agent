@@ -1049,19 +1049,22 @@ def _parse_dpi(dados):
 def _pacotes_dpi(pdf):
     """Empacota o que o rastreio de CTM le', em dicts picklables.
 
-    pac = {"i": {nome: objgen}, "f": {nome: (bytes, matriz, pac_filho|None)}}
+    pac = {"i": {nome: (objgen, w, h)}, "f": {nome: (bytes, matriz, pac_filho|None)}}
 
-    - imagem: so' o objgen (e' a chave de `usos`; `(0,0)` para objeto direto,
-      como no rastreio serial);
+    - imagem: objgen (chave de `usos`; `(0,0)` para objeto direto, como no
+      rastreio serial) e as dimensoes em pixels, que o clip usa para recortar;
     - Form: bytes + `/Matrix` (identidade quando ausente) + pacote do
       `/Resources` PROPRIO. `pac_filho is None` = Form sem `/Resources` (ou com
       dicionario vazio): o rastreio usa o `cur` do momento, que e' o fallback
       do pai exatamente como hoje.
 
+    Devolve `[(pi, dados, pacote)]` — o indice da pagina e' o que
+    `_aplica_clip_imagens` usa para reparsar e editar `cm_idx`/`do_idx`.
+
     Memo por identidade de `/Resources` (objgen/id) para nao repetir bytes;
     `refs` mantem os dicionarios diretos vivos (o `id()` recicla).
     """
-    paginas = []          # (dados da pagina, pacote)
+    paginas = []          # (indice da pagina, dados, pacote)
     memo = {}
     refs = []
 
@@ -1092,9 +1095,15 @@ def _pacotes_dpi(pdf):
                 continue
             if subtipo == "/Image":
                 try:
-                    pac["i"][str(nome)] = xo.objgen
+                    og = xo.objgen
                 except Exception:
                     continue
+                try:
+                    w = int(xo.get("/Width", 0))
+                    h = int(xo.get("/Height", 0))
+                except Exception:
+                    w = h = 0
+                pac["i"][str(nome)] = (og, w, h)
             elif subtipo == "/Form":
                 try:
                     dados = _bytes_conteudo(xo)
@@ -1121,7 +1130,7 @@ def _pacotes_dpi(pdf):
                 pac["f"][str(nome)] = (dados, m, construir(filho_res, prof + 1))
         return pac
 
-    for pagina in pdf.pages:
+    for pi, pagina in enumerate(pdf.pages):
         try:
             dados = _bytes_conteudo(pagina)
             res = pagina.Resources
@@ -1131,7 +1140,7 @@ def _pacotes_dpi(pdf):
             continue
         pac = construir(res)
         if pac is not None:
-            paginas.append((dados, pac))
+            paginas.append((pi, dados, pac))
     return paginas, refs
 
 
@@ -1155,8 +1164,9 @@ def _caminha_dpi(ops, pac, ctm, prof, usos):
             ctm = _mul(ctm, [float(x) for x in operandos])
         elif op == "Do":
             nome = str(operandos[0])
-            og = cur["i"].get(nome)
-            if og is not None:
+            dado = cur["i"].get(nome)
+            if dado is not None:
+                og = dado[0]
                 sx = math.hypot(ctm[0], ctm[1])
                 sy = math.hypot(ctm[2], ctm[3])
                 if sx > 0 and sy > 0 and prof < 8:
@@ -1175,7 +1185,7 @@ def _caminha_dpi(ops, pac, ctm, prof, usos):
 
 
 def _dpi_pagina(args):
-    """Worker: parse + rastreio de UMA pagina; devolve {objgen: [(sx, sy)]}."""
+    """Worker do caminho ISOLADO: parse + rastreio de UMA pagina."""
     dados, pac = args
     try:
         return dict(_caminha_dpi(_parse_dpi(dados), pac,
@@ -1184,21 +1194,32 @@ def _dpi_pagina(args):
         return {}
 
 
-def _tamanhos_na_pagina(pdf):
+def _tamanhos_na_pagina(pdf, dpi_paginas=None):
     """Mapeia objgen da imagem -> lista de (larg_pt, alt_pt) desenhados.
 
     Percorre os content streams rastreando a CTM (cm/q/Q/Do), inclusive dentro
     de Form XObjects. E' a base do DPI efetivo usado pelo otimizador
     (re-amostra imagens acima do limiar).
 
-    Rodada 19: o parse + rastreio roda em ProcessPoolExecutor (2,7 -> ~0,8 s);
-    eram 1,5 s de parse e 1,3 s de rastreio na thread principal. O parser e' o
-    MESMO (`pikepdf.parse_content_stream` com o filtro "q Q cm Do") — aqui nao
-    ha' indice guardado, mas a regra da casa vale: nao trocar por equivalente.
+    Rodada 20: quando o clip roda (default nos 3 niveis), o mapa vem de
+    `_aplica_clip_imagens` — a MESMA passada de pool que ja' parseia pagina por
+    pagina — na forma `[(pi, {objgen: [(sx, sy)]})]`, e ja' com as paginas
+    reescritas pelo clip re-rastreadas. Sem clip (ou com
+    `PDFAGENT_DPI_SERIAL=1`), cai no caminho isolado da rodada 19: pacotes +
+    pool (`_dpi_pagina`) ou, se nao der, em serie.
 
-    A ordem de `usos` (pagina a pagina, na ordem dos draws) e' preservada pelo
-    `map` + merge, e `_dpi_efetivo` so' olha o maximo.
+    O parser e' o MESMO em todos os caminhos (`pikepdf.parse_content_stream`
+    com o filtro "q Q cm Do"); nao ha' indice guardado, mas a regra da casa
+    vale: nao trocar por equivalente.
     """
+    if dpi_paginas is not None:
+        saida = defaultdict(list)
+        for _pi, dpi in dpi_paginas:
+            for og, lista in dpi.items():
+                saida[og].extend(lista)
+        if os.environ.get("PDFAGENT_DEBUG_TEMPO"):
+            print("    dpi: %d imagens (do clip)" % len(saida))
+        return saida
     _t0 = _time.perf_counter()
     paginas, _refs = _pacotes_dpi(pdf)
     _t1 = _time.perf_counter()
@@ -1211,21 +1232,22 @@ def _tamanhos_na_pagina(pdf):
         try:
             from concurrent.futures import ProcessPoolExecutor
             with ProcessPoolExecutor(max_workers=_workers_processo()) as pool:
-                resultados = list(pool.map(_dpi_pagina, paginas, chunksize=4))
+                resultados = list(pool.map(
+                    _dpi_pagina, [(d, p) for _pi, d, p in paginas], chunksize=4))
             de_pool = True
         except Exception:
             resultados = None
     if resultados is None:
-        resultados = [_dpi_pagina(a) for a in paginas]
-    usos = defaultdict(list)
+        resultados = [_dpi_pagina((d, p)) for _pi, d, p in paginas]
+    saida = defaultdict(list)
     for r in resultados:
         for og, lista in r.items():
-            usos[og].extend(lista)
+            saida[og].extend(lista)
     if os.environ.get("PDFAGENT_DEBUG_TEMPO"):
         print("    dpi: pacotes %.2fs, %s %.1fs"
               % (_t1 - _t0, "pool" if de_pool else "serial",
                  _time.perf_counter() - _t1))
-    return usos
+    return saida
 
 
 def _dpi_efetivo(w_px, h_px, usos):
@@ -4391,37 +4413,69 @@ _TMP_PDF_DRAWS = None
 
 
 def _draws_pagina(args):
-    """Worker: parseia o conteudo de UMA pagina e devolve os draws.
+    """Worker: parse de UMA pagina -> draws de clip + mapa de DPI.
 
-    Mesmo `pikepdf.parse_content_stream` da versao serial (sem filtro!), para
-    `cm_idx`/`do_idx` continuarem validos — `_aplica_clip_imagens` reparseia com
-    o mesmo parser e edita aquelas posicoes.
+    Duas coisas saem da MESMA tarefa (rodada 20), mas com parsers distintos e
+    de proposito:
+
+    - clip: `pikepdf.parse_content_stream` SEM filtro, igual a versao serial,
+      porque `_aplica_clip_imagens` reparseia a pagina e edita
+      `instrucoes[cm_idx]`/`[do_idx]` — filtrar desalinha o indice (foi 2/21 no
+      gate da rodada 16);
+    - DPI: parse com o filtro "q Q cm Do" de `_tamanhos_na_pagina`, que nao
+      usa indice nenhum.
+
+    O que se economiza e' o spawn de um segundo pool e uma rodada de pickle;
+    cada metade da resposta continua identica a de antes.
     """
     global _TMP_PDF_DRAWS
-    dados, mapa_xo, pag_bbox, pi = args
+    dados, pac, pag_bbox, pi = args
+    draws = []
     try:
         if _TMP_PDF_DRAWS is None:
             _TMP_PDF_DRAWS = pikepdf.new()
         st = _TMP_PDF_DRAWS.make_stream(dados)
         instrucoes = list(pikepdf.parse_content_stream(st))
     except Exception:
-        return []
-    try:
-        return _rastreia_draws(instrucoes, mapa_xo, pag_bbox, pi)
-    except Exception:
-        return []
+        instrucoes = None
+    if instrucoes is not None:
+        try:
+            draws = _rastreia_draws(instrucoes, pac["i"], pag_bbox, pi)
+        except Exception:
+            draws = []
+    dpi = {}
+    if not os.environ.get("PDFAGENT_DPI_SERIAL"):
+        try:
+            dpi = dict(_caminha_dpi(_parse_dpi(dados), pac,
+                                    (1, 0, 0, 1, 0, 0), 0, defaultdict(list)))
+        except Exception:
+            dpi = {}
+    return draws, dpi
 
 
 def _coleta_draws(pdf):
-    """Lista de draws de imagem com clip retangular e CTM.
+    """Draws de imagem (clip/CTM) + DPI por pagina, numa passada de pool.
 
-    O parse+rastreio de cada pagina roda em ProcessPoolExecutor (376 paginas
-    independentes); era 11,2 s dos 13 s da etapa de clip.
+    As 376 paginas sao independentes e cada uma custa parse + rastreio; era
+    11,2 s dos 13 s da etapa de clip (rodada 16) e depois passou a carregar
+    tambem o DPI (rodada 20), que antes pagava um SEGUNDO pool so' para
+    reparsear as mesmas paginas.
+
+    Devolve `(draws, dpi_paginas, pacotes)`:
+
+    - `dpi_paginas` = [(pi, {objgen: [(sx, sy)]})] na ordem das paginas;
+    - `pacotes` = {pi: pacote} — o clip precisa re-rastrear o DPI das paginas
+      que ELE reescrever (o `cm` novo e o recorte mudam o DPI efetivo).
+
+    Com `PDFAGENT_DPI_SERIAL=1` devolve `dpi_paginas=None` (A/B e teste).
     """
+    paginas, _refs = _pacotes_dpi(pdf)
     args = []
-    info = []          # (pi, dados, tem_instrucoes)
-    for pi, pagina in enumerate(pdf.pages):
+    pacotes = {}
+    for pi, dados, pac in paginas:
+        pacotes[pi] = pac
         try:
+            pagina = pdf.pages[pi]
             try:
                 media = [float(x) for x in pagina.MediaBox]
             except Exception:
@@ -4434,27 +4488,9 @@ def _coleta_draws(pdf):
                         max(cb[0], cb[2]), max(cb[1], cb[3]))
         except Exception:
             pag_bbox = None
-        try:
-            dados = _bytes_conteudo(pagina)
-            xobjs = dict(pagina.Resources.get("/XObject", {}))
-        except Exception:
-            continue
-        if not dados:
-            continue
-        mapa = {}
-        for nome, xo in xobjs.items():
-            try:
-                if str(xo.get("/Subtype")) != "/Image":
-                    continue
-                mapa[str(nome)] = (xo.objgen, int(xo.get("/Width", 0)),
-                                   int(xo.get("/Height", 0)))
-            except Exception:
-                continue
-        if not mapa:
-            continue
-        args.append((dados, mapa, pag_bbox, pi))
+        args.append((dados, pac, pag_bbox, pi))
     if not args:
-        return []
+        return [], None, pacotes
     resultados = None
     usar_pool = (not getattr(sys, "frozen", False) and len(args) > 8
                  and (os.cpu_count() or 1) > 1)
@@ -4467,7 +4503,11 @@ def _coleta_draws(pdf):
             resultados = None
     if resultados is None:
         resultados = [_draws_pagina(a) for a in args]
-    return [d for bloco in resultados for d in bloco]
+    draws = [d for bloco, _dpi in resultados for d in bloco]
+    if os.environ.get("PDFAGENT_DPI_SERIAL"):
+        return draws, None, pacotes
+    dpi_paginas = [(args[i][3], dpi) for i, (_bloco, dpi) in enumerate(resultados)]
+    return draws, dpi_paginas, pacotes
 
 
 def _aplica_clip_imagens(pdf, log):
@@ -4475,19 +4515,26 @@ def _aplica_clip_imagens(pdf, log):
 
     So age quando o desenho e' unico, sem rotacao e com clip retangular.
     Reescreve o `cm` que precede o `Do` e recorta os pixels.
+
+    Rodada 20: a coleta desta passada devolve tambem o DPI por pagina (mesmo
+    parse de pagina, dois rastreios), que antes custava um pool proprio. Como
+    ESTE passo reescreve o `cm` e recorta os pixels, o DPI das paginas mexidas
+    e' re-rastreado aqui — e' o estado pos-clip que o otimizador enxerga.
+    Devolve o DPI por pagina para `_tamanhos_na_pagina`.
     """
     _td0 = _time.time()
-    draws = _coleta_draws(pdf)
+    draws, dpi_paginas, pacotes = _coleta_draws(pdf)
     if os.environ.get("PDFAGENT_DEBUG_TEMPO"):
         print("    clip: coleta_draws %.1fs" % (_time.time() - _td0))
     if not draws:
-        return 0
+        return dpi_paginas
     from collections import Counter
     contagem = Counter(d["objgen"] for d in draws)
     por_pagina = defaultdict(list)
     for d in draws:
         por_pagina[d["pagina"]].append(d)
     total = 0
+    recalculadas = []          # (pi, conteudo novo) das paginas reescritas
     for pi, lista in por_pagina.items():
         pagina = pdf.pages[pi]
         try:
@@ -4586,11 +4633,26 @@ def _aplica_clip_imagens(pdf, log):
             try:
                 novo = pikepdf.unparse_content_stream(instrucoes)
                 pagina.Contents = pdf.make_stream(novo)
+                recalculadas.append((pi, novo))
             except Exception as ex:
                 log(f"    clip conteudo pag{pi}: {ex}")
+    # o clip mudou o `cm` e recortou pixels: o DPI efetivo dessas paginas e' o
+    # do estado POS-clip (o otimizador so' ve' esse)
+    if recalculadas and dpi_paginas is not None:
+        novos = {}
+        for pi, novo in recalculadas:
+            pac = pacotes.get(pi)
+            if pac is None:
+                continue
+            try:
+                novos[pi] = _dpi_pagina((novo, pac))
+            except Exception:
+                continue
+        if novos:
+            dpi_paginas = [(pi, novos.get(pi, dpi)) for pi, dpi in dpi_paginas]
     if total:
         log(f"    imagens recortadas (ClipImages): {total}")
-    return total
+    return dpi_paginas
 
 
 def _recomprime_flate(pdf, log):
@@ -5311,12 +5373,13 @@ def comprimir(entrada, saida, nivel="recommended", log=print, _guard=None,
 
         log(_etapa("[2] mapeando imagens e DPI efetivo"))
         _CLIPADOS.clear()
+        _dpi_usos = None
         if spec.get("clip", False) and not _sem_risco:
             _tcl = _time.time()
-            _aplica_clip_imagens(pdf, log)
+            _dpi_usos = _aplica_clip_imagens(pdf, log)
             if os.environ.get("PDFAGENT_DEBUG_TEMPO"):
                 log("    clip: %.1fs" % (_time.time() - _tcl))
-        usos = _tamanhos_na_pagina(pdf)
+        usos = _tamanhos_na_pagina(pdf, _dpi_usos)
         total = trocadas = 0
 
         # --- pipeline por imagem -------------------------------------------

@@ -628,6 +628,75 @@ Duas correções de fidelidade/velocidade que saíram junto:
   escrita da máscara é a única parte móvel de thread — provado que o teste
   falha se ela for desligada).
 
+### Rodada 20 — DPI dentro da passada do clip (e o bug que o gate pegou)
+
+As rodadas 18-19 deixaram duas passadas de pool que liam as MESMAS 376 páginas:
+o clip (`_coleta_draws`, parse sem filtro porque `_aplica_clip_imagens` edita
+`instrucoes[cm_idx]`) e o DPI (`_tamanhos_na_pagina`, parse com filtro
+`"q Q cm Do"`). Cada uma pagava o próprio spawn de 24 processos.
+
+Agora `_draws_pagina` devolve `(draws, dpi)` e `_coleta_draws` devolve
+`(draws, dpi_paginas, pacotes)`; `_aplica_clip_imagens` repassa e `comprimir` faz
+`usos = _tamanhos_na_pagina(pdf, _dpi_paginas)`. **Dois parses por página, de
+propósito**: o do clip continua sem filtro (índice!) e o do DPI continua com o
+filtro; o que se economiza é o spawn do segundo pool e uma rodada de pickle.
+O pacote de `/Resources` da rodada 19 virou o único empacotamento: a entrada de
+imagem agora é `(objgen, w, h)` — `objgen` para o DPI, `w`/`h` para o recorte.
+
+#### O bug: DPI antes do clip é o estado ERRADO (2/21 no gate)
+
+A primeira versão devolvia o mapa agregado, coletado **antes** de o clip rodar.
+O gate acusou 2/21 (NS8002 em extreme/recommended, imagens 787×655 e 512×496 px)
+— o mesmo padrão da rodada 16, o que fez olhar para o clip na hora.
+
+Causa medida: `_aplica_clip_imagens` **reescreve o `cm`** e **recorta os
+pixels**. Em NS8002 o desenho da imagem (182,0) era 553,26 pt de altura e vira
+314,14 pt; a (147,0) ia de 643,45 para 237,75. O DPI efetivo (px por pt) muda
+junto — e o otimizador só vê o estado pós-clip. Com o mapa pré-clip,
+reamostrávamos para o alvo errado (a largura batia, a altura não).
+
+**Correção:** `_coleta_draws` devolve o DPI **por página** e `pacotes = {pi:
+pacote}`; quem reescreveu a página re-rastreia o DPI dela com o conteúdo NOVO
+(`_dpi_pagina((novo, pac))`) antes de devolver. Só as páginas mexidas pagam esse
+custo (2 em processo.pdf, 2 em NS8002). Depois disso o mapa do clip é idêntico
+ao medido do zero no pdf já clipado — em processo.pdf (469 imagens) e em NS8002
+(15), e a paridade voltou a 0/21.
+
+**Lição:** "mesma página, uma passada só" é seguro para *ler*, mas o DPI depende
+de um estado que o clip ESCREVE. Ao fundir fases, perguntar sempre se a segunda
+fase lê algo que a primeira altera — e provar a equivalência contra o caminho
+antigo (foi o `proto20` que mostrou os draws iguais; o gate mostrou o que o
+`proto20` não cobria: o efeito no ARQUIVO).
+
+#### Números
+
+| | antes (v19) | depois (v20) |
+|---|---|---|
+| `clip: coleta_draws` | 4,4-4,8 s | 5,2-5,8 s (leva o DPI junto) |
+| fase de DPI isolada | 1,5-1,6 s (pacotes 0,19 + pool 1,4) | **0** (`dpi: N imagens (do clip)`) |
+| run completo, **8 pares alternados** (4 com cada binário na frente) | mediana **62,6 s** (min 61,7) | mediana **62,1 s** (min 60,9) |
+
+Δ médio **−0,35 s** (mediana −0,50; desvio 0,85; erro padrão 0,30; **6/8 pares a
+favor**; t≈1,2 — não é significativo com 8 pares). Nas FASES o líquido é −0,4 s
+(clip +1,15, DPI −1,55), medido com precisão de ±0,05: o ganho é pequeno e real.
+
+**Uma medição intermediária mentiu:** os primeiros 4 pares (medidos na versão
+ainda SEM o fix, e numa janela em que o v19 rodou lento) deram −2,18 s com 4/4 a
+favor. Repetidos com o código corrigido e a ordem dos binários invertida em
+metade dos pares, o Δ caiu para −0,35 s. **Ordem e janela importam: alterne
+quem roda primeiro.**
+
+A saída final é 11.382.226 B, 0 diferenças estruturais, texto 0/376.
+O ganho não paga sozinho a complexidade (são ~70 linhas e um acoplamento novo
+entre clip e DPI); o que fecha a conta é metade dos spawns de pool por
+compressão, que pesa em máquina de poucos núcleos. O commit é separado — se
+preferir o código mínimo, `git revert` dele devolve a rodada 19 inteira.
+
+**Vacinas** (`tests/test_dpi_pacotes.py`, 6 testes): geometria do mapa, Form
+sem/vazio `/Resources`, pool × serial, `cm_idx`/`do_idx` apontando para `cm`/`Do`
+no parse sem filtro, DPI do clip == isolado, e **o caso do recorte**
+(200×100 pt → 50×50 pt depois do clip, com o mapa tendo de acompanhar).
+
 ### Rodada 19 — DPI efetivo em processos (2,8 → 1,7 s) e a hipótese que caiu
 
 `_tamanhos_na_pagina` custava 2,7 s dos 61,8, decomposto em parse 1,5 s +
