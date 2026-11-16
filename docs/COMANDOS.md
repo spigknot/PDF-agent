@@ -91,6 +91,7 @@ Nenhuma é obrigatória; todas têm default seguro.
 | `PDFAGENT_PROC_IMG` | `1` | `0` volta a fase de imagens para **threads** (a GIL limita a ~2,7×; processo escala mais) |
 | `PDFAGENT_PROC_WORKERS` | `24` | workers dos pools de **processo** (imagens e normalização). Limitado por `os.cpu_count()` |
 | `PDFAGENT_PROC_NORM` | `1` | `0` roda `_normaliza_conteudo` em série (medido: 37,9 s serial × 14,9 s em pool) |
+| `PDFAGENT_FONTES_SERIAL` | desligado | `1` roda a coleta de fontes no processo principal (o pool é o default: 8,5 → 2,3 s). Serve de A/B e é o que o teste de equivalência usa |
 | `PDFAGENT_JANELA` | = workers de processo | quantas imagens ficam em voo. **Se ficar menor que os workers, o pool fica ocioso** |
 | `PDFAGENT_THREADS` | `8` | threads do pool de fallback (quando processo está desligado) |
 | `PDFAGENT_LOTE_FONTE` | `8` | fontes por tarefa no subset em lote |

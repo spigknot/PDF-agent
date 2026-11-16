@@ -231,118 +231,100 @@ def _descritores_vivos(pdf):
     return vivos
 
 
-def _usos_e_codigos(pdf):
-    """Um UNICO walk do conteudo devolvendo (codigos_por_fonte, usos_por_fonte).
+def _chave_res_pacote(res):
+    """Chave picklable de um /Resources: objgen quando indireto, id() direto."""
+    if getattr(res, "is_indirect", False):
+        og = res.objgen
+        return ("i", og[0], og[1])
+    return ("d", id(res))
 
-    Antes eram dois walks completos (376 paginas + Form XObjects cada), ~11,6 s
-    dos 111 s. As duas visoes saem do mesmo parser:
 
-    - `codigos_por_fonte`: {objgen: set(codigos)}. Fonte citada por `Tf` entra
-      com set vazio mesmo sem nenhum `Tj` (sem isso ela e' apagada do
-      /Resources e a pagina fica sem fonte — processo.pdf pg148, /R72).
-    - `usos_por_fonte`: [(objeto_fonte, codigos, largura_em_bytes)] agregado
-      por objgen, com a largura do tipo da fonte (2 para Type0).
+def _chave_fonte_pacote(fo):
+    """(chave de achados, objgen de citacao) da fonte — os dois picklables.
+
+    A identidade de CITACAO (`Tf`) e' o objgen cru, que o pikepdf devolve
+    (0, 0) para dicionario direto (o walk serial cria a entrada (0,0) nesse
+    caso); a de ACHADOS troca (0,0) por ("direto", id). Por isso as duas
+    viajam separadas — juntar as duas muda o conjunto de chaves de `por_obj`.
     """
-    por_obj = defaultdict(set)
-    saida = []
-    por_fonte = {}
-    vistos_res = set()
-    _refs = []
+    if getattr(fo, "is_indirect", False):
+        try:
+            og = fo.objgen
+            return ("i", og[0], og[1]), (og[0], og[1])
+        except Exception:
+            pass
+    try:
+        cit = tuple(fo.objgen)
+    except Exception:
+        cit = None
+    return ("d", id(fo)), cit
 
-    def walk(dados, res, prof=0):
+
+def _pacotes_recursos(pdf):
+    """Empacota os /Resources em dicts picklables, na ordem de visita do walk.
+
+    Cada pacote: {"fontes": {nome: (chave, largura, objgen)}, "xobjs":
+    {nome: (bytes do Form, chave do /Resources filho)}}. O walk roda em outro
+    PROCESSO com esta estrutura — sem objeto pikepdf, nada de picklar a arvore
+    do qpdf. `refs` mantem os dicionarios DIRETOS vivos durante a montagem:
+    `id()` recicla e o memo colidiria (a mesma armadilha de `objgen == (0,0)`).
+
+    O memo e' GLOBAL por /Resources, como o `vistos_res` do walk serial: um
+    /Resources compartilhado por duas paginas e' visitado UMA vez. Filho que
+    cai no /Resources do pai (Form sem /Resources proprio) nao entra de novo —
+    no serial o walk retorna na hora e nao tokeniza esse Form.
+    """
+    mapa = {}
+    paginas = []          # (dados da pagina, chave do /Resources)
+    fontes = {}           # chave -> objeto fonte (o principal resolve no replay)
+    refs = []
+
+    def construir(res, prof=0):
         if res is None or prof > 8:
-            return
-        _refs.append(res)
+            return None
+        if not getattr(res, "is_indirect", False):
+            refs.append(res)
         try:
-            chave = res.objgen if getattr(res, "is_indirect", False) else id(res)
+            chave = _chave_res_pacote(res)
         except Exception:
-            chave = id(res)
-        if chave in vistos_res:
-            return
-        vistos_res.add(chave)
+            return None
+        if chave in mapa:
+            return chave
+        pac = {"fontes": {}, "xobjs": {}}
+        mapa[chave] = pac            # registra antes de recursar (ciclo /Parent)
         try:
-            fontes = dict(res.get("/Font", {}))
+            entradas = dict(res.get("/Font", {}))
         except Exception:
-            fontes = {}
-        largura = {}
-        for nome, fo in fontes.items():
+            entradas = {}
+        for nome, fo in entradas.items():
             try:
-                largura[str(nome)] = 2 if str(fo.get("/Subtype")) == "/Type0" else 1
+                w = 2 if str(fo.get("/Subtype")) == "/Type0" else 1
             except Exception:
-                largura[str(nome)] = 1
-        achados = defaultdict(list)
-        cur = None
-        pend = []
-        for tipo, val in _tokens_conteudo(dados):
-            if tipo in ("str", "hex", "name"):
-                pend.append((tipo, val))
+                w = 1
+            k, cit = _chave_fonte_pacote(fo)
+            pac["fontes"][str(nome)] = (k, w, cit)
+            fontes[k] = fo
+        try:
+            xobjs = dict(res.get("/XObject", {}))
+        except Exception:
+            xobjs = {}
+        for nome, xo in xobjs.items():
+            try:
+                if str(xo.get("/Subtype")) != "/Form":
+                    continue
+                sub = _bytes_conteudo(xo)
+            except Exception:
                 continue
-            if tipo in ("num", "arr", "dict"):
-                continue
-            if tipo == "op":
-                if val == b"Tf":
-                    cur = None
-                    for tp, p in reversed(pend):
-                        if tp == "name":
-                            cur = p.decode("latin-1")
-                            break
-                    pend = []
-                    if cur is not None:
-                        try:
-                            fo_tf = fontes.get(Name(cur))
-                            if fo_tf is not None:
-                                por_obj[fo_tf.objgen]   # cria entrada vazia
-                        except Exception:
-                            pass
-                elif val in (b"Tj", b"TJ", b"'", b'"') and cur is not None:
-                    for tp, p in pend:
-                        if tp in ("str", "hex"):
-                            achados[cur].append(p)
-                    pend = []
-                elif val == b"Do":
-                    alvo = None
-                    for tp, p in reversed(pend):
-                        if tp == "name":
-                            alvo = p
-                            break
-                    pend = []
-                    if alvo is not None:
-                        try:
-                            xo = res.get("/XObject", {}).get(Name(alvo.decode("latin-1")))
-                        except Exception:
-                            xo = None
-                        if xo is not None and str(xo.get("/Subtype")) == "/Form":
-                            sub = _bytes_conteudo(xo)
-                            if sub:
-                                walk(sub, xo.get("/Resources", res), prof + 1)
-                else:
-                    pend = []
-                continue
-            pend = []
-        for nome, blocos in achados.items():
-            fo = fontes.get(Name(nome))
-            if fo is None:
+            if not sub:
                 continue
             try:
-                og = fo.objgen
+                filho = xo.get("/Resources", res)
             except Exception:
-                og = (0, 0)
-            w = largura.get(nome, 1)
-            codigos = set()
-            for b in blocos:
-                if w == 2:
-                    for i in range(0, len(b) - 1, 2):
-                        codigos.add((b[i] << 8) | b[i + 1])
-                else:
-                    codigos.update(b)
-            if og == (0, 0):
-                og = ("direto", id(fo))
-            por_obj[og].update(codigos)
-            if og in por_fonte:
-                por_fonte[og][1].update(codigos)
-                continue
-            por_fonte[og] = [fo, set(codigos), w]
-            saida.append(por_fonte[og])
+                filho = res
+            ck = construir(filho, prof + 1)
+            if ck is not None:
+                pac["xobjs"][str(nome)] = (sub, ck)
+        return chave
 
     for pagina in pdf.pages:
         try:
@@ -350,8 +332,173 @@ def _usos_e_codigos(pdf):
             dados = _bytes_conteudo(pagina)
         except Exception:
             continue
-        if dados:
-            walk(dados, res)
+        if not dados:
+            continue
+        try:
+            ck = construir(res)
+        except Exception:
+            continue
+        if ck is not None:
+            paginas.append((dados, ck))
+    return mapa, paginas, fontes, refs
+
+
+def _walk_fontes_pacote(dados, chave, mapa, prof=0, vistos=None):
+    """O walk de `_usos_e_codigos` sobre o pacote — mesmo parser, mesmo laco.
+
+    Devolve eventos na ordem do walk serial, para o replay reproduzir a ordem
+    de insercao de `por_obj`/`por_fonte` (que decide qual copia e' a canonica
+    no merge de fontes):
+
+    - ("c", objgen): fonte citada em `Tf` (entra vazia; sem nenhum `Tj` ela
+      seria apagada do /Resources e a pagina ficaria sem fonte);
+    - ("a", chave, largura, blocos): fonte com `Tj`/`TJ`/`'`/`"` no res, com
+      os BYTES na ordem em que apareceram.
+
+    Os bytes viajam crus (nao um `set` de codigos) de proposito: a ordem de
+    iteracao de um set de ints depende do historico de insercao, e o
+    `_cod2glifo` numera os glifos ITERANDO esse set. Serializar o set mudava a
+    numeracao e o programa subsetado saia 20 bytes diferente (mesma imagem,
+    arquivo diferente). Montando o set no processo principal, na ordem dos
+    bytes, o resultado volta a ser byte-identico ao caminho serial.
+    """
+    eventos = []
+    if vistos is None:
+        vistos = set()
+    if chave is None or prof > 8 or chave in vistos:
+        return eventos
+    vistos.add(chave)
+    pac = mapa[chave]
+    fontes = pac["fontes"]
+    achados = defaultdict(list)
+    cur = None
+    pend = []
+    for tipo, val in _tokens_conteudo(dados):
+        if tipo in ("str", "hex", "name"):
+            pend.append((tipo, val))
+            continue
+        if tipo in ("num", "arr", "dict"):
+            continue
+        if tipo == "op":
+            if val == b"Tf":
+                cur = None
+                for tp, p in reversed(pend):
+                    if tp == "name":
+                        cur = p.decode("latin-1")
+                        break
+                pend = []
+                if cur is not None:
+                    dado = fontes.get(cur)
+                    if dado is not None and dado[2] is not None:
+                        eventos.append(("c", dado[2]))
+            elif val in (b"Tj", b"TJ", b"'", b'"') and cur is not None:
+                for tp, p in pend:
+                    if tp in ("str", "hex"):
+                        achados[cur].append(p)
+                pend = []
+            elif val == b"Do":
+                alvo = None
+                for tp, p in reversed(pend):
+                    if tp == "name":
+                        alvo = p.decode("latin-1")
+                        break
+                pend = []
+                if alvo is not None:
+                    xo = pac["xobjs"].get(alvo)
+                    if xo is not None:
+                        eventos.extend(_walk_fontes_pacote(
+                            xo[0], xo[1], mapa, prof + 1, vistos))
+            else:
+                pend = []
+            continue
+        pend = []
+    for nome, blocos in achados.items():
+        dado = fontes.get(nome)
+        if dado is None:
+            continue
+        k, w, _cit = dado
+        eventos.append(("a", k, w, blocos))
+    return eventos
+
+
+def _fontes_pagina(args):
+    """Worker: walk das fontes de UMA pagina sobre o pacote picklable."""
+    dados, chave, mapa = args
+    return _walk_fontes_pacote(dados, chave, mapa)
+
+
+def _usos_e_codigos(pdf):
+    """Um UNICO walk do conteudo devolvendo (codigos_por_fonte, usos_por_fonte).
+
+    - `codigos_por_fonte`: {objgen: set(codigos)}. Fonte citada por `Tf` entra
+      com set vazio mesmo sem nenhum `Tj` (sem isso ela e' apagada do
+      /Resources e a pagina fica sem fonte — processo.pdf pg148, /R72).
+    - `usos_por_fonte`: [(objeto_fonte, codigos, largura_em_bytes)] agregado
+      por objgen, com a largura do tipo da fonte (2 para Type0).
+
+    Rodada 17: o walk roda em ProcessPoolExecutor sobre pacotes picklables —
+    8,5 s -> 2,5 s (o custo era 100% tokenizacao: 7,7 s de 8,5; leitura dos
+    21 MB de content stream e' 0,17 s). O parser e' o MESMO de sempre
+    (`_tokens_conteudo`, sem filtro de operador): trocar por um equivalente
+    foi o que desalinhou indices na rodada 16. O replay dos eventos e' o que
+    reconstroi `por_obj`/`por_fonte` na ordem do walk serial.
+    """
+    _t0 = _time.perf_counter()
+    mapa, paginas, fontes, _refs = _pacotes_recursos(pdf)
+    _t1 = _time.perf_counter()
+    eventos = None
+    if paginas:
+        # tarefa maior primeiro: o stream de 3,9 MB custa 1,1 s sozinho e
+        # precisa COMECAR cedo, senao vira cauda do pool.
+        ordem = sorted(range(len(paginas)), key=lambda i: -len(paginas[i][0]))
+        args = [(paginas[i][0], paginas[i][1], mapa) for i in ordem]
+        usar_pool = (not getattr(sys, "frozen", False) and len(args) > 8
+                     and (os.cpu_count() or 1) > 1
+                     and not os.environ.get("PDFAGENT_FONTES_SERIAL"))
+        if usar_pool:
+            try:
+                from concurrent.futures import ProcessPoolExecutor
+                with ProcessPoolExecutor(max_workers=_workers_processo()) as pool:
+                    brutos = list(pool.map(_fontes_pagina, args, chunksize=1))
+                eventos = [None] * len(paginas)
+                for pos, i in enumerate(ordem):
+                    eventos[i] = brutos[pos]
+            except Exception:
+                eventos = None
+        if eventos is None:
+            eventos = [_fontes_pagina((d, c, mapa)) for d, c in paginas]
+    _t2 = _time.perf_counter()
+
+    por_obj = defaultdict(set)
+    saida = []
+    por_fonte = {}
+
+    def _og(chave):
+        return (chave[1], chave[2]) if chave[0] == "i" else ("direto", chave[1])
+
+    for lista in eventos or ():
+        for ev in lista:
+            if ev[0] == "c":
+                por_obj[ev[1]]       # objgen cru: cria a entrada vazia
+                continue
+            _, k, w, blocos = ev
+            codigos = set()          # MESMA ordem de insercao do walk serial
+            for b in blocos:
+                if w == 2:
+                    for i in range(0, len(b) - 1, 2):
+                        codigos.add((b[i] << 8) | b[i + 1])
+                else:
+                    codigos.update(b)
+            og = _og(k)
+            por_obj[og].update(codigos)
+            if og in por_fonte:
+                por_fonte[og][1].update(codigos)
+                continue
+            por_fonte[og] = [fontes[k], set(codigos), w]
+            saida.append(por_fonte[og])
+    if os.environ.get("PDFAGENT_DEBUG_TEMPO"):
+        print("    fontes: coleta pacotes %.2fs pool %.2fs replay %.2fs"
+              % (_t1 - _t0, _t2 - _t1, _time.perf_counter() - _t2))
     return por_obj, saida
 
 

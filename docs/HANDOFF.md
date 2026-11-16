@@ -1,44 +1,52 @@
 # HANDOFF — CompressPDF × iLovePDF
 
 > Prompt de continuidade. Cole num agente novo para retomar sem perder contexto.
-> Estado em: 16 rodadas de investigação concluídas.
+> Estado em: 17 rodadas de investigação concluídas.
 
 ---
 
-## ESTADO ATUAL (fim da rodada 16, 22/11)
+## ESTADO ATUAL (fim da rodada 17, 22/11)
 
 | métrica | valor | referência (motor) |
 |---|---|---|
 | recommended | **11.382.226 B** | 12.227.010 (93,09%) |
 | extreme | 8.651.585 B | 9.275.878 (93,27%) |
 | low | 14.884.111 B | 16.565.289 (89,85%) |
-| tempo recommended | **71,7 s** (mediana de 3) | ~60 s |
+| tempo recommended | **67,1 s** (mediana de 3; era 71,7) | ~60 s |
 | texto | 0/376 (extreme 3/376, bug do extrator) | 0/376 |
 | render vs **original** | média 0,3131%, pior 8,67% (pg218) | pior 12,76% (motor é pior) |
-| gate | **PASS** — 0/3 + 0/21 (estresse em 118 s) | — |
+| gate | **PASS** — 0/3 + 0/21, mais o item novo "coleta de fontes (pool x serial)" | — |
 
-Branch `paridade/rodada-5`, árvore limpa. Últimos commits: `723514e` (clip em
-processos), `2281033` (kernel bitonal LANCZOS), `6f5ab9d` (JBIG2 no recommended).
+Branch `paridade/rodada-5`, árvore limpa. Último commit: rodada 17 (coleta de
+fontes em processos: 8,7 → 2,2 s na 1ª chamada).
 
-**Próxima rodada (17), com plano pronto:**
-`.hermes/plans/2026-11-22_rodada17-coleta-paralela.md` — paralelizar
-`_usos_e_codigos` (8,4 s dos 71,7). O obstáculo medido são os **1.162 Form
-XObjects** em que o walk recursa.
+**Próxima rodada (18) — o que sobrou, medido:** imagens 31,3 s (piso de
+núcleos: ~500 s de CPU em 24 processos), `_normaliza_conteudo` 14,4 s (piso do
+parse+reescrita; parser próprio foi descartado na rodada 12), **coleta de fontes
+4,6 s em DUAS chamadas** (a 2ª só existe porque `_codigos_por_fonte` reparseia
+depois que o merge trocou os objetos de fonte — é o alvo mais barato), subset
+~3 s, save ~5 s.
 
 **Ferramentas que economizam tempo:**
 - `PDFAGENT_DEBUG_TEMPO=1` → tempo por fase (o mapa que revelou o gargalo real).
 - `scripts/mede_tempo.py recommended 3 --fases` → mediana/média/espalhamento.
-- `COMPRESSPDF_MERGE=0`, `COMPRESSPDF_CASAS=N`,
+- `COMPRESSPDF_MERGE=0`, `COMPRESSPDF_CASAS=N`, `PDFAGENT_FONTES_SERIAL=1`,
   `PDFAGENT_KERNEL_BITONAL`, `PDFAGENT_BITONAL`, `PDFAGENT_PROC_*` → A/B sem
   editar código (tabela completa em `docs/COMANDOS.md` §4b).
 
-**Duas lições que custaram rodadas inteiras:**
+**Três lições que custaram rodadas inteiras:**
 1. O gate de render comparava com o **motor**; o correto é o **original** — em
    22 páginas somos mais fiéis que ele. E cobria 10 páginas fixas, escondendo a
    pior (pg218).
 2. Paralelizar o parser **que já existe** é seguro; trocar por um equivalente
    (ou filtrar operadores) desalinha índices usados em outra etapa — foi 2/21 no
    gate.
+3. Não atravessar `set` de códigos entre processos: a ORDEM DE ITERAÇÃO depende
+   do histórico de inserção, e `_cod2glifo` numera glifos iterando esse set — o
+   arquivo saía 20 B diferente com conjuntos iguais. `sorted()` esconde isso;
+   compare `list(set)`. E não reusar `ProcessPoolExecutor` dentro de worker de
+   `ProcessPoolExecutor` (Windows/spawn): trava com 0% de CPU.
+
 
 ---
 

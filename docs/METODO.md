@@ -628,6 +628,68 @@ Duas correções de fidelidade/velocidade que saíram junto:
   escrita da máscara é a única parte móvel de thread — provado que o teste
   falha se ela for desligada).
 
+### Rodada 17 — coleta de fontes em processos (71,7 → 67,1 s)
+
+`_usos_e_codigos` custava 8,4 s dos 71,7 e a instrumentação dizia exatamente
+onde: leitura dos 21 MB de content stream **0,17 s**, tokenização **7,66 s**
+(1.169 streams únicos) e o laço do walk 0,83 s. Nove décimos do custo era
+`_tokens_conteudo` na thread principal — o walk não usa
+`pikepdf.parse_content_stream`, usa o tokenizador próprio.
+
+Para levar o walk a outro processo só era preciso tornar picklable o que ele lê.
+`/Resources` virou `{fontes: {nome: (chave, largura, objgen)}, xobjs: {nome:
+(bytes do Form, chave do /Resources filho)}}`, montado na thread principal
+(0,16 s), com memo GLOBAL por `/Resources` — o mesmo `vistos_res` do serial: um
+`/Resources` compartilhado é visitado uma vez e o Form que cai no `/Resources`
+do pai continua sendo pulado (é o que o walk serial faz, replicado de
+propósito). O walk é o MESMO código rodando no worker; o principal só reproduz
+os eventos na ordem do walk serial (`Tf` citou → entrada vazia; `Tj` achou →
+bytes na ordem).
+
+| | antes | depois |
+|---|---|---|
+| coleta, 1ª chamada | 8,7 s | **2,2 s** |
+| coleta, 2ª chamada (pós-merge) | 0,6 s | 2,4 s |
+| fase de fontes (`[4]`→`[5]`) | 31,2 s | ~27 s |
+| **total recommended** | 71,7 s | **67,1 s** (mediana de 3) |
+
+A 2ª chamada ficou mais cara: no serial ela era quase de graça porque o
+`_TOKENS_CACHE` do processo principal já estava quente; no pool cada chamada
+paga spawn + pickle e o cache dos workers só acerta se a tarefa cair no mesmo
+processo. É por isso que o ganho total (4,6 s) é menor que o da 1ª chamada
+(6,5 s).
+
+**A armadilha que custou a rodada: não serializar o `set`.** A primeira versão
+devolvia `{chave: set(codigos)}` do worker. Os conjuntos vinham iguais, a
+contagem de objetos batia e ainda assim o arquivo saía **20 bytes** diferente:
+`_cod2glifo` numera os glifos ITERANDO esse set, e a ordem de iteração de um
+`set` de ints depende do histórico de inserção (colisão em open addressing), não
+só do conteúdo — `sorted()` esconde exatamente essa diferença. Agora os bytes
+viajam crus e o set é montado no processo principal, na ordem dos bytes: os dois
+caminhos dão o mesmo retrato, inclusive `list(set)`. É o que
+`tests/test_coleta_fontes.py` trava (pool × serial comparando conteúdo **e**
+ordem, com Form de `/Resources` próprio, `Tf` sem `Tj` e Tipo0). O item entrou no
+`scripts/verificar.py` como "coleta de fontes (pool x serial)".
+
+**Duas tentativas medidas que não ficaram:**
+
+1. **Serializar o set** (acima): 20 B de diferença no programa de uma fonte;
+   `compara_saidas.py` acusava um stream trocado. Revertido.
+2. **Reusar o pool de imagens para a coleta** (`_pool_proc`, devolveria o
+   segundo spawn e o cache dos workers): no CLI funciona e dá 63,3 s numa
+   rodada, mas dentro do pool aninhado de `tests/test_paridade_lab.py` os três
+   níveis **travam com 0% de CPU** — deadlock de `ProcessPoolExecutor` dentro de
+   worker de `ProcessPoolExecutor` no Windows/spawn. Revertido: o pool por
+   chamada custa ~0,5 s e é seguro.
+
+**O que sobrou:** imagens 31,3 s (piso de núcleos), `_normaliza_conteudo`
+14,4 s (piso do parse+reescrita), coleta 4,6 s (duas chamadas), subset ~3 s,
+save ~5 s. O próximo alvo real é a **segunda** coleta: ela existe porque o
+`_codigos_por_fonte` reparseia depois que o merge trocou os objetos de fonte.
+
+`PDFAGENT_FONTES_SERIAL=1` força o caminho serial (A/B e o teste de
+equivalência).
+
 ### Rodada 16 — clip em processos (76,1 → 71,7 s)
 
 O `_coleta_draws` era 11,2 s dos 12,8 s da etapa de clip: parse + rastreio de
