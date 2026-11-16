@@ -628,6 +628,45 @@ Duas correções de fidelidade/velocidade que saíram junto:
   escrita da máscara é a única parte móvel de thread — provado que o teste
   falha se ela for desligada).
 
+### Rodada 21 — o executável rodava tudo em série (111,8 → 65,4 s)
+
+As rodadas 16-20 otimizaram o **CLI**. No `.exe` que o usuário recebe, nada
+disso acontecia: `multiprocessing.freeze_support()` nunca era chamado e **todos**
+os pools tinham `not getattr(sys, "frozen", False)` — sete pontos. Medido no
+onedir da própria árvore:
+
+| fase | .exe (antes) | CLI |
+|---|---|---|
+| clip (coleta) | 15,9 s | 5,4 s |
+| imagens `[3]` | 47,0 s | 30,5 s |
+| normalização | 40,3 s | 14,4 s |
+| coleta de fontes | 8,3 s | 2,5 s |
+| **total** | **111,8 s** | **62,1 s** |
+
+**Correção:** `multiprocessing.freeze_support()` no `__main__` do `app.py` (o
+entrypoint do PyInstaller — sem isso o filho reabriria a GUI em vez de rodar a
+tarefa) e a decisão virou `_pode_processo()`, que respeita `PDFAGENT_PROC_OFF=1`
+e o PORTÁTIL.
+
+**O onefile fica de fora de propósito:** nele o PyInstaller extrai o bundle para
+um `_MEIxxxx` a cada processo, então um pool de 24 reextrairia o bundle 24× (o
+start do portátil já é ~2,6 s). `_portatil_onefile()` detecta pelo basename do
+`sys._MEIPASS` (`_MEI...`); o onedir usa `_internal` e roda com processos.
+
+| | antes | depois |
+|---|---|---|
+| onedir (instalador) | 111,8 s | **65,4 s** |
+| CLI | 62,1 s | 61,5 s (inalterado) |
+
+O `.exe` fica ~4 s acima do CLI porque cada worker reimporta o bundle
+(tkinter + pikepdf). Saída do executável: 11.382.226 B, **0 diferenças
+estruturais**. Vacina: `tests/test_executavel.py` (freeze_support no entrypoint,
+knob e o não-portátil).
+
+**Lição:** otimize o caminho que o usuário roda, não o que o desenvolvedor roda.
+Vinte rodadas de ganho (146 → 62 s no CLI) não chegavam ao usuário final, que
+recebia 111,8 s.
+
 ### Rodada 20 — DPI dentro da passada do clip (e o bug que o gate pegou)
 
 As rodadas 18-19 deixaram duas passadas de pool que liam as MESMAS 376 páginas:

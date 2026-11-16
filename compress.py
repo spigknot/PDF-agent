@@ -231,6 +231,35 @@ def _descritores_vivos(pdf):
     return vivos
 
 
+def _portatil_onefile():
+    """Executavel PORTATIL (onefile)? Cada worker reextrai o bundle inteiro.
+
+    No onefile o PyInstaller extrai o bundle para um `_MEIxxxx` temporario a
+    cada processo; um pool de 24 reextrairia 24x (o start do onefile ja' e'
+    ~2,6 s). No onedir o bundle fica em `_internal` e o filho so' importa.
+    """
+    if not getattr(sys, "frozen", False):
+        return False
+    return os.path.basename(getattr(sys, "_MEIPASS", "") or "").startswith("_MEI")
+
+
+def _pode_processo():
+    """Da' para usar pool de PROCESSOS agora?
+
+    Fora do executavel, sempre. DENTRO do .exe (PyInstaller) so' porque o
+    entrypoint (`app.py`) chama `multiprocessing.freeze_support()` — sem isso o
+    filho tentaria abrir a GUI em vez de rodar a tarefa, e por isso o pool era
+    desligado no executavel (que rodava a compressao inteira em serie:
+    111,8 s contra 62,1 s do CLI; com o freeze_support o onedir foi a 65,4 s).
+
+    Excecao: o PORTATIL onefile continua em serie/threads (`_portatil_onefile`).
+    `PDFAGENT_PROC_OFF=1` desliga tudo (diagnostico e maquina sem folga).
+    """
+    if os.environ.get("PDFAGENT_PROC_OFF"):
+        return False
+    return not _portatil_onefile()
+
+
 def _chave_res_pacote(res):
     """Chave picklable de um /Resources: objgen quando indireto, id() direto."""
     if getattr(res, "is_indirect", False):
@@ -493,7 +522,7 @@ def _usos_e_codigos(pdf):
         # precisa COMECAR cedo, senao vira cauda do pool.
         ordem = sorted(range(len(paginas)), key=lambda i: -len(paginas[i][0]))
         args = [(paginas[i][0], paginas[i][1], mapa) for i in ordem]
-        usar_pool = (not getattr(sys, "frozen", False) and len(args) > 8
+        usar_pool = (_pode_processo() and len(args) > 8
                      and (os.cpu_count() or 1) > 1
                      and not os.environ.get("PDFAGENT_FONTES_SERIAL"))
         if usar_pool:
@@ -1225,7 +1254,7 @@ def _tamanhos_na_pagina(pdf, dpi_paginas=None):
     _t1 = _time.perf_counter()
     resultados = None
     de_pool = False
-    usar_pool = (not getattr(sys, "frozen", False) and len(paginas) > 8
+    usar_pool = (_pode_processo() and len(paginas) > 8
                  and (os.cpu_count() or 1) > 1
                  and not os.environ.get("PDFAGENT_DPI_SERIAL"))
     if usar_pool:
@@ -3999,11 +4028,11 @@ def _merge_subset_fontes(pdf, log):
     # --- fase 2: subset ---
     # Com 1 tarefa por grupo (164) o pickle dominava e nao havia ganho. Agora
     # vai em LOTES: poucas tarefas grandes, cada uma subsetando varias fontes.
-    # `sys.frozen` (PyInstaller) exige freeze_support() no entrypoint — por
-    # isso o pool so' roda fora do executavel.
+    # `freeze_support()` no entrypoint (app.py) e' o que permite processo no
+    # executavel; `_pode_processo()` tambem respeita PDFAGENT_PROC_OFF.
     import sys as _sys
     lote = int(os.environ.get("PDFAGENT_LOTE_FONTE", "8"))
-    usar_pool = (not getattr(_sys, "frozen", False)
+    usar_pool = (_pode_processo()
                  and len(plano) > lote and (os.cpu_count() or 1) > 1)
     resultados = None
     if usar_pool:
@@ -4492,7 +4521,7 @@ def _coleta_draws(pdf):
     if not args:
         return [], None, pacotes
     resultados = None
-    usar_pool = (not getattr(sys, "frozen", False) and len(args) > 8
+    usar_pool = (_pode_processo() and len(args) > 8
                  and (os.cpu_count() or 1) > 1)
     if usar_pool:
         try:
@@ -4999,7 +5028,7 @@ def _normaliza_conteudo(pdf, log):
     if not tarefas:
         return
     resultados = None
-    usar_pool = (not getattr(sys, "frozen", False) and len(tarefas) > 8
+    usar_pool = (_pode_processo() and len(tarefas) > 8
                  and (os.cpu_count() or 1) > 1
                  and os.environ.get("PDFAGENT_PROC_NORM", "1") != "0")
     if usar_pool:
@@ -5297,7 +5326,7 @@ def _submete_proc(job):
     if os.environ.get("PDFAGENT_PROC_IMG", "1") == "0":
         return None
     n = _workers_processo()
-    if n <= 1 or getattr(sys, "frozen", False):
+    if n <= 1 or not _pode_processo():
         return None
     try:
         if _POOL_PROC is None:
@@ -5394,7 +5423,7 @@ def comprimir(entrada, saida, nivel="recommended", log=print, _guard=None,
         # a 8 e o pool fica ocioso — era o que segurava a fase em 41,5 s.
         _nproc = 0
         if os.environ.get("PDFAGENT_PROC_IMG", "1") != "0" \
-                and not getattr(sys, "frozen", False):
+                and _pode_processo():
             _nproc = _workers_processo()
         janela = int(os.environ.get("PDFAGENT_JANELA")
                      or (_nproc if _nproc > 1 else _largura_pool()))

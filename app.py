@@ -158,6 +158,11 @@ def run_gui(argv=None):
 
 
 if __name__ == "__main__":
+    # OBRIGATORIO no executavel (PyInstaller): sem isto, cada worker de
+    # ProcessPoolExecutor reabriria o app; com isto, o filho cai aqui, executa
+    # a tarefa do pool e sai. Fora do .exe e' no-op.
+    import multiprocessing
+    multiprocessing.freeze_support()
     argv = sys.argv[1:]
     if argv:
         _anexa_console()

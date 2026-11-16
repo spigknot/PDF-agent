@@ -12,10 +12,10 @@
 | recommended | **11.382.226 B** | 12.227.010 (93,09%) |
 | extreme | 8.651.585 B | 9.275.878 (93,27%) |
 | low | 14.884.111 B | 16.565.289 (89,85%) |
-| tempo recommended | **62,1 s** (8 pares alternados; v19: 62,6 s; min 60,9) | ~60 s |
+| tempo recommended | **62,1 s** (CLI, 8 pares) · **65,4 s** no `.exe` onedir (era **111,8 s**: rodava tudo em série) | ~60 s |
 | texto | 0/376 (extreme 3/376, bug do extrator) | 0/376 |
 | render vs **original** | média 0,3131%, pior 8,67% (pg218) | pior 12,76% (motor é pior) |
-| gate | **PASS** — 0/3 + 0/21 + "coleta de fontes" e "DPI efetivo" (6 testes) | — |
+| gate | **PASS** — 0/3 + 0/21 + "coleta de fontes", "DPI efetivo" e "executável" | — |
 
 Branch `paridade/rodada-5`, árvore limpa. Rodadas 17-20: coleta de fontes em
 processos, reuso por assinatura, DPI em processos e DPI dentro da passada do
@@ -78,6 +78,11 @@ rodada 12 por quebrar a paridade byte a byte com o motor).
 8. Em A/B de tempo, **alterne qual binário roda primeiro** e desconfie de um
    resultado bonito: 4 pares davam −2,18 s; com a ordem invertida em metade dos
    pares e o código corrigido, o Δ real caiu para −0,35 s.
+9. **Meça o artefato que o usuário recebe.** Quando o app é distribuído como
+   `.exe`, o caminho do PyInstaller é outro: `freeze_support()` no entrypoint e
+   nenhum `not getattr(sys, "frozen")` — o executável rodava em 111,8 s o que o
+   CLI fazia em 62,1 s. O portátil onefile fica de fora do pool (reextrai o
+   bundle a cada worker).
 
 
 ---
