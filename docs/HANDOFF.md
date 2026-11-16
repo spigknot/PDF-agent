@@ -12,7 +12,7 @@
 | recommended | **11.382.226 B** | 12.227.010 (93,09%) |
 | extreme | 8.651.585 B | 9.275.878 (93,27%) |
 | low | 14.884.111 B | 16.565.289 (89,85%) |
-| tempo recommended | **63,0 s** nesta janela (v18: 64,2 s) — DPI 2,83 → 1,72 s; melhor janela já medida: 61,8 s | ~60 s |
+| tempo recommended | **62,1 s** (A/B de 7 pares alternados; v18: 63,6 s) — Δ −1,16 s médio; melhor janela já medida: 61,8 s | ~60 s |
 | texto | 0/376 (extreme 3/376, bug do extrator) | 0/376 |
 | render vs **original** | média 0,3131%, pior 8,67% (pg218) | pior 12,76% (motor é pior) |
 | gate | **PASS** — 0/3 + 0/21 + "coleta de fontes" e "DPI efetivo" | — |
