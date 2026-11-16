@@ -639,13 +639,20 @@ e a rastrear a CTM em `ProcessPoolExecutor`, com o **mesmo parser**
 
 | | antes | depois |
 |---|---|---|
-| fase de DPI (isolada, 3 medidas) | 2,83 s | **1,72 s** |
-| run completo (A/B intercalado, 2 pares) | 62,5 / 63,0 s | **61,4 / 62,2 s** |
+| fase de DPI (isolada, 3 medidas alternadas) | 2,83 s | **1,72 s** |
+| fase de DPI no pipeline (instrumentação do próprio código) | 2,8-2,9 s (`parse 1,5 + rastreio 1,3`) | ~1,7 s |
+| run completo, mesma janela (v18 × v19) | 64,0 / 64,3 s | **62,0 / 63,0 / 63,4 s** |
 
 O piso é o spawn do pool (~0,7 s) mais o maior stream (~0,35 s); o resto é
 paralelo. **Unificar com o clip** (que já parseia a mesma página) salvaria mais
 ~1 s, mas exigiria mexer no caminho que guarda `cm_idx`/`do_idx` — descartado
 na própria rodada, mesma regra da 16.
+
+**Cuidado com a janela da máquina:** o mesmo código mediu 61,8 s às 11h e
+64-66 s às 13h. Um par de medianas de janelas diferentes (63,2 × 63,0) chegou a
+sugerir ganho zero; o A/B com o binário antigo rodando na MESMA janela mostrou
+64,0-64,3 × 62,0-63,4. Compare sempre no mesmo momento, e confira a fase pela
+instrumentação (`dpi: ...`), que é imune à deriva.
 
 **A hipótese que a medição derrubou:** mandar o `mapa` de `/Resources` uma vez
 por worker (`ProcessPoolExecutor(initializer=...)`) em vez de em cada tarefa. O
