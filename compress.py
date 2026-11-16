@@ -3956,9 +3956,156 @@ def _intersecta(b1, b2):
     return r
 
 
-def _coleta_draws(pdf):
-    """Lista de draws de imagem com clip retangular e CTM."""
+def _rastreia_draws(instrucoes, mapa_xo, pag_bbox, pi):
+    """Rastreia CTM/clip de UMA pagina e devolve os draws de imagem.
+
+    `mapa_xo` = {nome: (objgen, w, h)} so' com as imagens. Igual a versao
+    serial, NAO entra em Form XObjects — por isso o mapa basta (sem /Matrix
+    nem /Resources de Form).
+    """
     draws = []
+    ctm = (1, 0, 0, 1, 0, 0)
+    pilha_ctm = []
+    clip = pag_bbox
+    pilha_clip = []
+    pts = []           # pontos do path JA em espaco de pagina
+    retangular = True
+    pendente = None
+    ultimo_cm = None
+    clip_ranges = []   # (ini, fim) de clips aplicados depois do ultimo cm
+    path_ini = None
+
+    def _pt(x, y):
+        # le `ctm` do escopo corrente (nao captura o valor na definicao)
+        return (ctm[0] * x + ctm[2] * y + ctm[4],
+                ctm[1] * x + ctm[3] * y + ctm[5])
+
+    for idx, (operandos, operador) in enumerate(instrucoes):
+        op = str(operador)
+        if op == "q":
+            pilha_ctm.append(ctm)
+            pilha_clip.append(clip)
+        elif op == "Q":
+            if pilha_ctm:
+                ctm = pilha_ctm.pop()
+            if pilha_clip:
+                clip = pilha_clip.pop()
+        elif op == "cm":
+            try:
+                m = [float(x) for x in operandos]
+                if len(m) == 6:
+                    ctm = _mat_mul(ctm, m)
+                    ultimo_cm = idx
+                    clip_ranges = []   # novo escopo de imagem
+                    path_ini = None
+            except Exception:
+                pass
+        elif op in ("m", "l"):
+            try:
+                v = [float(x) for x in operandos]
+                if path_ini is None:
+                    path_ini = idx
+                pts.append(_pt(v[0], v[1]))
+            except Exception:
+                pass
+        elif op == "re":
+            try:
+                v = [float(x) for x in operandos]
+                if path_ini is None:
+                    path_ini = idx
+                x, y, w, h = v[:4]
+                for (cx, cy) in ((x, y), (x + w, y), (x, y + h), (x + w, y + h)):
+                    pts.append(_pt(cx, cy))
+            except Exception:
+                pass
+        elif op == "c":
+            retangular = False
+            try:
+                v = [float(x) for x in operandos]
+                for k in (0, 2, 4):
+                    pts.append(_pt(v[k], v[k + 1]))
+            except Exception:
+                pass
+        elif op in ("v", "y"):
+            retangular = False
+            try:
+                v = [float(x) for x in operandos]
+                for k in range(0, min(4, len(v) - 1), 2):
+                    pts.append(_pt(v[k], v[k + 1]))
+            except Exception:
+                pass
+        elif op in ("W", "W*"):
+            if pts:
+                xs = [p[0] for p in pts]
+                ys = [p[1] for p in pts]
+                pendente = ((min(xs), min(ys), max(xs), max(ys)), retangular)
+            else:
+                pendente = (None, retangular)
+        elif op in ("n", "f", "F", "f*", "S", "s", "B", "B*", "b", "b*"):
+            if pendente is not None:
+                if pendente[1]:
+                    clip = _intersecta(clip, pendente[0])
+                    if ultimo_cm is not None and path_ini is not None:
+                        clip_ranges.append((path_ini, idx))
+                else:
+                    pendente = (None, False)
+                pendente = None
+            pts = []
+            retangular = True
+            path_ini = None
+        elif op == "Do":
+            nome = str(operandos[0]) if operandos else ""
+            dado = mapa_xo.get(nome)
+            if dado is not None:
+                og, w, h = dado
+                a, b, c, d, e, f = ctm
+                # o Do precisa ser o ultimo item do escopo p/ poder remover clip
+                fecha_escopo = (idx + 1 < len(instrucoes)
+                                and str(instrucoes[idx + 1][1]) == "Q")
+                draws.append({
+                    "pagina": pi, "objgen": og, "ctm": ctm,
+                    "cm_idx": ultimo_cm, "clip": clip,
+                    "clips_pos_cm": list(clip_ranges) if fecha_escopo else [],
+                    "fecha_escopo": fecha_escopo,
+                    "do_idx": idx,
+                    "w": w, "h": h,
+                })
+    return draws
+
+
+_TMP_PDF_DRAWS = None
+
+
+def _draws_pagina(args):
+    """Worker: parseia o conteudo de UMA pagina e devolve os draws.
+
+    Mesmo `pikepdf.parse_content_stream` da versao serial (sem filtro!), para
+    `cm_idx`/`do_idx` continuarem validos — `_aplica_clip_imagens` reparseia com
+    o mesmo parser e edita aquelas posicoes.
+    """
+    global _TMP_PDF_DRAWS
+    dados, mapa_xo, pag_bbox, pi = args
+    try:
+        if _TMP_PDF_DRAWS is None:
+            _TMP_PDF_DRAWS = pikepdf.new()
+        st = _TMP_PDF_DRAWS.make_stream(dados)
+        instrucoes = list(pikepdf.parse_content_stream(st))
+    except Exception:
+        return []
+    try:
+        return _rastreia_draws(instrucoes, mapa_xo, pag_bbox, pi)
+    except Exception:
+        return []
+
+
+def _coleta_draws(pdf):
+    """Lista de draws de imagem com clip retangular e CTM.
+
+    O parse+rastreio de cada pagina roda em ProcessPoolExecutor (376 paginas
+    independentes); era 11,2 s dos 13 s da etapa de clip.
+    """
+    args = []
+    info = []          # (pi, dados, tem_instrucoes)
     for pi, pagina in enumerate(pdf.pages):
         try:
             try:
@@ -3974,124 +4121,39 @@ def _coleta_draws(pdf):
         except Exception:
             pag_bbox = None
         try:
-            # NAO filtrar operadores aqui: `_coleta_draws` guarda `cm_idx`
-            # (posicao da instrucao `cm`) e `_aplica_clip_imagens` reparseia a
-            # pagina SEM filtro para editar essa posicao. Com filtro os indices
-            # desalinham e o clip edita a instrucao errada — medido: gate caiu
-            # para 2/21 no corpus. O ganho do filtro (2,2 s) nao paga.
-            instrucoes = list(pikepdf.parse_content_stream(pagina))
+            dados = _bytes_conteudo(pagina)
+            xobjs = dict(pagina.Resources.get("/XObject", {}))
         except Exception:
             continue
-        ctm = (1, 0, 0, 1, 0, 0)
-        pilha_ctm = []
-        clip = pag_bbox
-        pilha_clip = []
-        pts = []           # pontos do path JA em espaco de pagina
-        retangular = True
-        pendente = None
-        ultimo_cm = None
-        clip_ranges = []   # (ini, fim) de clips aplicados depois do ultimo cm
-        path_ini = None
-
-        def _pt(x, y):
-            # le `ctm` do escopo corrente (nao captura o valor na definicao)
-            return (ctm[0] * x + ctm[2] * y + ctm[4],
-                    ctm[1] * x + ctm[3] * y + ctm[5])
-
-        for idx, (operandos, operador) in enumerate(instrucoes):
-            op = str(operador)
-            if op == "q":
-                pilha_ctm.append(ctm)
-                pilha_clip.append(clip)
-            elif op == "Q":
-                if pilha_ctm:
-                    ctm = pilha_ctm.pop()
-                if pilha_clip:
-                    clip = pilha_clip.pop()
-            elif op == "cm":
-                try:
-                    m = [float(x) for x in operandos]
-                    if len(m) == 6:
-                        ctm = _mat_mul(ctm, m)
-                        ultimo_cm = idx
-                        clip_ranges = []   # novo escopo de imagem
-                        path_ini = None
-                except Exception:
-                    pass
-            elif op in ("m", "l"):
-                try:
-                    v = [float(x) for x in operandos]
-                    if path_ini is None:
-                        path_ini = idx
-                    pts.append(_pt(v[0], v[1]))
-                except Exception:
-                    pass
-            elif op == "re":
-                try:
-                    v = [float(x) for x in operandos]
-                    if path_ini is None:
-                        path_ini = idx
-                    x, y, w, h = v[:4]
-                    for (cx, cy) in ((x, y), (x + w, y), (x, y + h), (x + w, y + h)):
-                        pts.append(_pt(cx, cy))
-                except Exception:
-                    pass
-            elif op == "c":
-                retangular = False
-                try:
-                    v = [float(x) for x in operandos]
-                    for k in (0, 2, 4):
-                        pts.append(_pt(v[k], v[k + 1]))
-                except Exception:
-                    pass
-            elif op in ("v", "y"):
-                retangular = False
-                try:
-                    v = [float(x) for x in operandos]
-                    for k in range(0, min(4, len(v) - 1), 2):
-                        pts.append(_pt(v[k], v[k + 1]))
-                except Exception:
-                    pass
-            elif op in ("W", "W*"):
-                if pts:
-                    xs = [p[0] for p in pts]
-                    ys = [p[1] for p in pts]
-                    pendente = ((min(xs), min(ys), max(xs), max(ys)), retangular)
-                else:
-                    pendente = (None, retangular)
-            elif op in ("n", "f", "F", "f*", "S", "s", "B", "B*", "b", "b*"):
-                if pendente is not None:
-                    if pendente[1]:
-                        clip = _intersecta(clip, pendente[0])
-                        if ultimo_cm is not None and path_ini is not None:
-                            clip_ranges.append((path_ini, idx))
-                    else:
-                        pendente = (None, False)
-                    pendente = None
-                pts = []
-                retangular = True
-                path_ini = None
-            elif op == "Do":
-                nome = str(operandos[0]) if operandos else ""
-                try:
-                    xo = pagina.Resources.get("/XObject", {}).get(Name(nome))
-                except Exception:
-                    xo = None
-                if xo is not None and str(xo.get("/Subtype")) == "/Image":
-                    a, b, c, d, e, f = ctm
-                    # o Do precisa ser o ultimo item do escopo p/ poder remover clip
-                    fecha_escopo = (idx + 1 < len(instrucoes)
-                                    and str(instrucoes[idx + 1][1]) == "Q")
-                    draws.append({
-                        "pagina": pi, "objgen": xo.objgen, "ctm": ctm,
-                        "cm_idx": ultimo_cm, "clip": clip,
-                        "clips_pos_cm": list(clip_ranges) if fecha_escopo else [],
-                        "fecha_escopo": fecha_escopo,
-                        "do_idx": idx,
-                        "w": int(xo.get("/Width", 0)),
-                        "h": int(xo.get("/Height", 0)),
-                    })
-    return draws
+        if not dados:
+            continue
+        mapa = {}
+        for nome, xo in xobjs.items():
+            try:
+                if str(xo.get("/Subtype")) != "/Image":
+                    continue
+                mapa[str(nome)] = (xo.objgen, int(xo.get("/Width", 0)),
+                                   int(xo.get("/Height", 0)))
+            except Exception:
+                continue
+        if not mapa:
+            continue
+        args.append((dados, mapa, pag_bbox, pi))
+    if not args:
+        return []
+    resultados = None
+    usar_pool = (not getattr(sys, "frozen", False) and len(args) > 8
+                 and (os.cpu_count() or 1) > 1)
+    if usar_pool:
+        try:
+            from concurrent.futures import ProcessPoolExecutor
+            with ProcessPoolExecutor(max_workers=_workers_processo()) as pool:
+                resultados = list(pool.map(_draws_pagina, args, chunksize=4))
+        except Exception:
+            resultados = None
+    if resultados is None:
+        resultados = [_draws_pagina(a) for a in args]
+    return [d for bloco in resultados for d in bloco]
 
 
 def _aplica_clip_imagens(pdf, log):
