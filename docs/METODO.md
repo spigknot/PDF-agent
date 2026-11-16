@@ -628,6 +628,30 @@ Duas correções de fidelidade/velocidade que saíram junto:
   escrita da máscara é a única parte móvel de thread — provado que o teste
   falha se ela for desligada).
 
+### Rodada 16 — clip em processos (76,1 → 71,7 s)
+
+O `_coleta_draws` era 11,2 s dos 12,8 s da etapa de clip: parse + rastreio de
+CTM/clip das 376 páginas na thread principal. Virou `_rastreia_draws` (função de
+módulo) + `_draws_pagina` em `ProcessPoolExecutor`.
+
+**O parser foi mantido igual de propósito** (`pikepdf.parse_content_stream`, sem
+filtro): `_aplica_clip_imagens` reparseia a página e edita
+`instrucoes[cm_idx]`, então mudar o parser (ou filtrar operadores, como se
+tentou antes) desalinha os índices — foi o que derrubou o gate para 2/21.
+
+| | antes | depois |
+|---|---|---|
+| `_coleta_draws` | 11,2 s | **4,5 s** |
+| etapa de clip | 12,8 s | 6,7 s |
+| fase `[3]` | 38,5 s | 31,8 s |
+| **total** | 76,1 s | **71,7 s** (mediana de 3) |
+
+**O que sobrou, com o custo de cada um:** laço de imagens 22,5 s (~500 s de CPU,
+limitado por núcleos), `_normaliza_conteudo` 14,4 s (piso do parse+reescrita),
+coleta de fontes 8,4 s e subset 3,5 s. A coleta **não** é paralelizável de graça:
+o documento tem **1.162 Form XObjects** e o walk recursa neles — seria preciso
+serializar a árvore de recursos por página.
+
 ### Rodada 15 — o kernel do bitonal: LANCZOS é mais fiel E menor
 
 A página 218 (9,6% de render vs original) é um **scan de página inteira**
