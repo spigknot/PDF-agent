@@ -88,6 +88,58 @@ def _render_stats(a, b, paginas=PAGINAS):
     return (soma / n if n else 0.0), pior, pior_pg
 
 
+def _processa_nivel(arg):
+    """Roda UM nivel e devolve (nivel, linhas_de_saida, falhou).
+
+    Funcao de modulo para poder rodar em ProcessPoolExecutor: os tres niveis
+    do documento de estresse sao independentes.
+    """
+    nivel, tmp, texto_orig, calibrar = arg
+    import os
+    # cada nivel tem o proprio pool de processos; dividir evita 72 processos
+    # (3 x 24) disputando 36 CPUs
+    os.environ.setdefault("PDFAGENT_PROC_WORKERS",
+                          str(max(2, (os.cpu_count() or 4) // 3)))
+    ref = REFS[nivel]
+    saida = os.path.join(tmp, "processo_%s.pdf" % nivel)
+    r = compress.comprimir(ORIG, saida, nivel, log=lambda m: None)
+    tam_ref = os.path.getsize(ref)
+    razao = r["depois"] / tam_ref
+    texto = _texto(saida)
+    pag_texto = [i for i in range(min(len(texto), len(texto_orig)))
+                 if texto[i] != texto_orig[i]]
+    media, pior, pior_pg = _render_stats(saida, ORIG, PAGINAS)
+    problemas = []
+    if razao > LIMITE[nivel]:
+        problemas.append("tamanho %.4f > %.3f" % (razao, LIMITE[nivel]))
+    if len(texto) != len(texto_orig):
+        problemas.append("paginas %d != %d" % (len(texto), len(texto_orig)))
+    if len(pag_texto) > TEXTO_MAX[nivel]:
+        problemas.append("texto: %d pagina(s) > teto %d (%s)"
+                         % (len(pag_texto), TEXTO_MAX[nivel], pag_texto[:6]))
+    novas = set(i + 1 for i in pag_texto) - TEXTO_CONHECIDO[nivel]
+    if novas:
+        problemas.append("texto divergiu em pagina(s) nova(s): %s"
+                         % sorted(novas)[:6])
+    if media > RENDER_MEDIA_MAX[nivel]:
+        problemas.append("render medio %.4f > %.4f"
+                         % (media, RENDER_MEDIA_MAX[nivel]))
+    if pior > RENDER_PIOR_MAX[nivel]:
+        problemas.append("render pior %.4f > %.3f (pg %d)"
+                         % (pior, RENDER_PIOR_MAX[nivel], pior_pg))
+    if calibrar:
+        return nivel, ["  %-12s %d B (%.4f da ref) | texto!=orig %d | "
+                       "render medio %.3f%% pior %.2f%% (pg %d)"
+                       % (nivel, r["depois"], razao, len(pag_texto),
+                          100 * media, 100 * pior, pior_pg)], False
+    if problemas:
+        return nivel, ["  %-12s FALHA: %s" % (nivel, "; ".join(problemas))], True
+    return nivel, ["  %-12s ok  (%d B, %.2f%% da ref, texto!=orig %d, "
+                   "render %.3f%%)"
+                   % (nivel, r["depois"], 100 * razao, len(pag_texto),
+                      100 * pior)], False
+
+
 def main(argv):
     calibrar = "--calibrar" in argv
     niveis = ["recommended", "extreme", "low"]
@@ -101,52 +153,27 @@ def main(argv):
 
     tmp = tempfile.mkdtemp(prefix="paridade_lab_")
     texto_orig = _texto(ORIG)
+    tarefas = [(n, tmp, texto_orig, calibrar) for n in niveis]
+    resultados = None
+    if len(niveis) > 1 and "--sequencial" not in argv:
+        try:
+            # Niveis sao independentes: rodar os 3 em paralelo corta o gate de
+            # ~10 min para ~4 min. Cada compress ja' usa processos proprios,
+            # entao o worker divide as CPUs entre os niveis.
+            from concurrent.futures import ProcessPoolExecutor
+            with ProcessPoolExecutor(max_workers=len(niveis)) as pool:
+                resultados = list(pool.map(_processa_nivel, tarefas))
+        except Exception as ex:
+            print("  paralelo indisponivel (%s); em serie" % ex)
+            resultados = None
+    if resultados is None:
+        resultados = [_processa_nivel(t) for t in tarefas]
     falhas = total = 0
-    for nivel in niveis:
-        ref = REFS[nivel]
-        saida = os.path.join(tmp, "processo_%s.pdf" % nivel)
-        r = compress.comprimir(ORIG, saida, nivel, log=lambda m: None)
+    for nivel, linhas, falhou in resultados:
+        for linha in linhas:
+            print(linha)
         total += 1
-
-        tam_ref = os.path.getsize(ref)
-        razao = r["depois"] / tam_ref
-        texto = _texto(saida)
-        pag_texto = [i for i in range(min(len(texto), len(texto_orig)))
-                     if texto[i] != texto_orig[i]]
-        media, pior, pior_pg = _render_stats(saida, ORIG, PAGINAS)
-
-        problemas = []
-        if razao > LIMITE[nivel]:
-            problemas.append("tamanho %.4f > %.3f" % (razao, LIMITE[nivel]))
-        if len(texto) != len(texto_orig):
-            problemas.append("paginas %d != %d" % (len(texto), len(texto_orig)))
-        if len(pag_texto) > TEXTO_MAX[nivel]:
-            problemas.append("texto: %d pagina(s) > teto %d (%s)"
-                             % (len(pag_texto), TEXTO_MAX[nivel], pag_texto[:6]))
-        novas = set(i + 1 for i in pag_texto) - TEXTO_CONHECIDO[nivel]
-        if novas:
-            problemas.append("texto divergiu em pagina(s) nova(s): %s"
-                             % sorted(novas)[:6])
-        if media > RENDER_MEDIA_MAX[nivel]:
-            problemas.append("render medio %.4f > %.4f"
-                             % (media, RENDER_MEDIA_MAX[nivel]))
-        if pior > RENDER_PIOR_MAX[nivel]:
-            problemas.append("render pior %.4f > %.3f (pg %d)"
-                             % (pior, RENDER_PIOR_MAX[nivel], pior_pg))
-
-        if calibrar:
-            print("  %-12s %d B (%.4f da ref) | texto!=orig %d | "
-                  "render medio %.3f%% pior %.2f%% (pg %d)"
-                  % (nivel, r["depois"], razao, len(pag_texto),
-                     100 * media, 100 * pior, pior_pg))
-            continue
-        if problemas:
-            falhas += 1
-            print("  %-12s FALHA: %s" % (nivel, "; ".join(problemas)))
-        else:
-            print("  %-12s ok  (%d B, %.2f%% da ref, texto!=orig %d, render %.3f%%)"
-                  % (nivel, r["depois"], 100 * razao, len(pag_texto), 100 * pior))
-
+        falhas += 1 if falhou else 0
     if calibrar:
         return 0
     print("\n%d/%d combinacoes do documento de estresse com problema" % (falhas, total))
