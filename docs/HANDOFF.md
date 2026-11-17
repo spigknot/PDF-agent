@@ -17,9 +17,11 @@
 | render vs **original** | média 0,3131%, pior 8,67% (pg218) | pior 12,76% (motor é pior) |
 | gate | **PASS** — 0/3 + 0/21 + "coleta de fontes", "DPI efetivo" e "executável" | — |
 
-Branch `paridade/rodada-5`, árvore limpa. Rodadas 17-20: coleta de fontes em
-processos, reuso por assinatura, DPI em processos e DPI dentro da passada do
-clip — a saída segue estruturalmente idêntica em todas.
+Branch `paridade/rodada-5`, árvore limpa. **Release `v1.1.0` publicada** (tag no
+commit `bebffc3`, 3 assets: instalador, portátil e `SHA256SUMS-1.1.0.txt`;
+`main` == `paridade/rodada-5`). Rodadas 17-21: coleta de fontes em processos,
+reuso por assinatura, DPI em processos, DPI dentro da passada do clip e
+`freeze_support()` no executável — a saída segue estruturalmente idêntica.
 
 **A rodada 20 quase foi revertida:** o merge do DPI no clip rendeu só **−0,35 s**
 (0,6%) e introduziu um bug que o gate pegou (2/21: o DPI precisa ser o estado
