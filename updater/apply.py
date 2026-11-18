@@ -1160,7 +1160,59 @@ def _transaction_root() -> Path:
     return root
 
 
+def _garante_stdio() -> None:
+    """No .exe --windowed, sys.stdout/stderr sao None e o argparse ESTOURA ao
+    imprimir uso (`AttributeError: 'NoneType' object has no attribute 'write'`).
+
+    Estrategia: anexa ao console do processo pai (quem chamou de um terminal ve'
+    a mensagem); sem console, manda para os.devnull — nunca deixa None.
+    """
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+    anexou = False
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            if ctypes.windll.kernel32.AttachConsole(-1):
+                sys.stdout = open("CONOUT$", "w", buffering=1,
+                                  encoding="utf-8", errors="replace")
+                sys.stderr = open("CONOUT$", "w", buffering=1,
+                                  encoding="utf-8", errors="replace")
+                anexou = True
+        except Exception:
+            anexou = False
+    if not anexou:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")
+
+
+def _avisa_sem_argumentos() -> None:
+    """Duplo clique sem argumentos: explica o uso em vez de despejar traceback."""
+    texto = (
+        "PDFagentUpdater - atualizador do PDFagent.\n\n"
+        "O jeito normal e' pelo proprio app: abra o PDFagent e clique no botao\n"
+        "verde \"Atualizar\" quando houver versao nova.\n\n"
+        "Para reparar uma instalacao (instalador nao roda), use:\n\n"
+        "    PDFagentUpdater.exe --full --target \"%LOCALAPPDATA%\\Programs\\PDFagent\" "
+        "--log updater.log\n\n"
+        "Outras opcoes: --zip <pacote.zip> (pacote baixado da release),\n"
+        "--pid <pid do app> e --wait-timeout/--startup-timeout.\n"
+        "O log fica em %LOCALAPPDATA%\\Programs\\PDFagent\\updater.log."
+    )
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            ctypes.windll.user32.MessageBoxW(None, texto, "PDFagentUpdater", 0x40)
+            return
+        except Exception:
+            pass
+    print(texto)
+
+
 def main(argv: list[str] | None = None) -> int:
+    _garante_stdio()
     parser = argparse.ArgumentParser(description="PDFagentUpdater")
     parser.add_argument("--zip", type=Path, help="pacote completo (.zip)")
     parser.add_argument("--full", action="store_true",
@@ -1176,6 +1228,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="lista de orfaos a remover (uso interno do app)")
     parser.add_argument("--sync-version", type=str, help="versao alvo (log)")
     args = parser.parse_args(argv)
+
+    if not any((args.sync_staged, args.zip, args.full)):
+        _avisa_sem_argumentos()
+        return 0
 
     if args.sync_staged is not None:
         if not args.target or not args.log:
