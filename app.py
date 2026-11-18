@@ -41,7 +41,9 @@ class App(tk.Tk):
         self._update_checando = False
         self._monta()
         self.after(100, self._drena)
-        # checagem automatica: depois da janela desenhar, em thread propria
+        # Decisao do usuario: a checagem automatica acontece SO' no boot. Nao
+        # ha' re-checagem periodica durante a sessao — para conferir depois, o
+        # usuario usa o botao "Verificar atualizacoes".
         self.after(1500, lambda: self._checa_atualizacoes(manual=False))
 
     def _monta(self):

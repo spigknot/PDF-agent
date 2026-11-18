@@ -20,7 +20,8 @@ bump (2 lugares) → gate → build do updater → build do .exe/instalador → 
   atualizações por diff que o próprio app baixa.
 - **Assets da release**: `PDFagent-Setup-<versao>.exe` (instalador),
   `PDFagent.exe` (portátil), `PDFagent-onedir-<versao>.zip` (pacote completo
-  para reparo via updater) e `SHA256SUMS-<versao>.txt`.
+  para reparo via updater), `PDFagentUpdater.exe` (reparo sem instalador) e
+  `SHA256SUMS-<versao>.txt`.
 - **`dist/` e `build/` nunca vão para o git** (ver `.gitignore`): binário só
   existe na release.
 
@@ -169,7 +170,7 @@ py -3.11 tools/harness_updater.py
 ```bash
 cd /d/Projetos/PDF-agent/dist
 sha256sum PDFagent.exe PDFagent-Setup-<versao>.exe \
-  PDFagent-onedir-<versao>.zip | tee SHA256SUMS-<versao>.txt
+  PDFagent-onedir-<versao>.zip PDFagentUpdater.exe | tee SHA256SUMS-<versao>.txt
 ```
 
 Guarde os hashes: entram nas notas da release e servem para conferir o download.
@@ -203,6 +204,7 @@ gh release create v<versao> --repo spigknot/PDF-agent \
 gh release upload v<versao> ./PDFagent-Setup-<versao>.exe --repo spigknot/PDF-agent
 gh release upload v<versao> ./PDFagent.exe --repo spigknot/PDF-agent
 gh release upload v<versao> ./PDFagent-onedir-<versao>.zip --repo spigknot/PDF-agent
+gh release upload v<versao> ./PDFagentUpdater.exe --repo spigknot/PDF-agent
 gh release upload v<versao> ./SHA256SUMS-<versao>.txt --repo spigknot/PDF-agent
 ```
 
@@ -216,7 +218,7 @@ gh release view v<versao> --repo spigknot/PDF-agent --json tagName,url,assets \
   --jq '{tag:.tagName, url:.url, assets:[.assets[]|{name, size}]}'
 ```
 
-Deve listar exatamente os quatro assets. Depois, baixe e confira o hash:
+Deve listar exatamente os cinco assets. Depois, baixe e confira o hash:
 
 ```bash
 T="$LOCALAPPDATA/Temp/dl"; rm -rf "$T"; mkdir -p "$T"
@@ -256,5 +258,5 @@ rodada.
 - [ ] smoke `--in-place` deixou `<nome>_old.pdf`
 - [ ] `SHA256SUMS-<v>.txt` gerado
 - [ ] commit + push feitos **antes** da release
-- [ ] release com 4 assets e `gh release view` conferido
+- [ ] release com 5 assets e `gh release view` conferido
 - [ ] download + `sha256sum -c` conferido

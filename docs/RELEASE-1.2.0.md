@@ -7,8 +7,8 @@ validação de hash e rollback automático se o app novo não subir.
 
 ## O que mudou
 
-- **Verificação automática ao abrir** (e no botão "Verificar atualizações" quando
-  o usuário quer conferir na hora).
+- **Verificação automática apenas ao abrir** o app (sem re-checagem periódica);
+  o botão "Verificar atualizações" confere na hora quando o usuário quiser.
 - **Botão verde "Atualizar para X.Y.Z"** aparece quando existe versão nova, com
   o número de arquivos a baixar.
 - **Diff por arquivo via Cloudflare R2**: o app compara o manifesto publicado
@@ -66,7 +66,12 @@ O log da atualização fica em `%LOCALAPPDATA%\Programs\PDFagent\updater.log`.
 8b74752515a55aa844330b1d094f12b04d014a75c381ab47499afff57c5a5254  PDFagent-Setup-1.2.0.exe
 ba4b8de5663c5034023c254cc804b3a3db493e3086ddb3bb8f2aa135ea8664f7  PDFagent.exe
 32668b2e5dc86452f7c96860f1e3d19d86fe33e29ddeafcae7755ad17f7a6836  PDFagent-onedir-1.2.0.zip
+5bf2e7bd071df0d2591052127637510380910337aba205756165b3c0fe1bf5ee  PDFagentUpdater.exe
 ```
+
+O `PDFagentUpdater.exe` também vai como asset: serve para reparar uma
+instalação sem passar pelo instalador (basta colocá-lo na pasta do app, ou rodar
+de qualquer lugar com `--target`).
 
 ## Limitações conhecidas
 
