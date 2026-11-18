@@ -18,3 +18,7 @@ build/
 # temporario criado pelo teste do launcher (scripts/verificar.py)
 _verifica_launcher.bat
 .hermes/
+
+# release: credenciais e chave privada NUNCA vao para o git
+release/
+updater.log
