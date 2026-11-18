@@ -20,5 +20,6 @@ _verifica_launcher.bat
 .hermes/
 
 # release: credenciais e chave privada NUNCA vao para o git
-release/
+release/*
+!release/r2_config.example.json
 updater.log

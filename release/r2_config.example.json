@@ -1,0 +1,8 @@
+{
+  "account_id": "<account id>",
+  "access_key_id": "<access key>",
+  "secret_access_key": "<secret>",
+  "bucket": "pdf-agent",
+  "endpoint": "https://<account id>.r2.cloudflarestorage.com",
+  "public_base": "https://pub-<hash>.r2.dev"
+}
