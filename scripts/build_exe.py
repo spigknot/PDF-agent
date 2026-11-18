@@ -49,6 +49,10 @@ def _build(onedir=False, debug=False):
         # Pillow: nao decodificamos AVIF (4,2 MB de plugin)
         "--exclude-module", "PIL._avif",
         "--hidden-import", "fitz",
+        # `app` e' carregado dinamicamente pelo cli.py (__import__) e, como o
+        # entrypoint do PyInstaller vira __main__, sem isto o .exe instalado
+        # responde "comando 'gui' indisponivel: No module named 'app'".
+        "--hidden-import", "app",
         "--collect-submodules", "fontTools",
         # comandos sao carregados dinamicamente pelo cli.py (__import__)
         "--collect-submodules", "commands",
