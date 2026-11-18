@@ -54,7 +54,7 @@ _sem_risco_kernel = False
 _CLIPADOS = set()
 
 # Versao do aplicativo (mostrada por --version e usada no build do .exe)
-VERSAO = "1.1.0"
+VERSAO = "1.2.0"
 
 LEVELS = {
     # Low (0): base = perfil Default (tudo desligado) + overrides abaixo.

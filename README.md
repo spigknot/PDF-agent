@@ -102,6 +102,27 @@ Se o arquivo não puder ficar menor, nada é alterado (o original permanece).
 Desinstalar: Configurações → Apps → PDFagent — remove arquivos, a entrada do
 PATH e as chaves do menu de contexto.
 
+## Atualizações
+
+O app verifica sozinho ao abrir (e no botão **"Verificar atualizações"**). Quando
+existe versão nova aparece um botão verde **"Atualizar para X.Y.Z"**: ele baixa
+**só os arquivos que mudaram** do Cloudflare R2 (`sync_manifest.json` assinado),
+grava em `%TEMP%\pdfagent_update\<versao>\staged`, valida o SHA-256 de cada
+arquivo e entrega ao `PDFagentUpdater.exe`, que aplica com transação, reinicia o
+app e **desfaz tudo (rollback)** se o app novo não subir.
+
+Reparo manual (instalação corrompida ou máquina nova) — baixe
+`PDFagent-onedir-<versao>.zip` da release e rode:
+
+```bash
+"%LOCALAPPDATA%\Programs\PDFagent\PDFagentUpdater.exe" --full ^
+  --target "%LOCALAPPDATA%\Programs\PDFagent" --log updater.log
+```
+
+O log da atualização fica em `%LOCALAPPDATA%\Programs\PDFagent\updater.log`.
+O portátil (`PDFagent.exe` onefile) **não** se atualiza por diff: use o
+instalador.
+
 ## Interface gráfica
 
 **Duplo clique em `CompressPDF.bat`** (instala as dependências sozinho na

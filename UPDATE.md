@@ -10,14 +10,17 @@
 ## 0. Visão geral do fluxo
 
 ```
-bump (2 lugares) → gate → build do .exe → build do instalador → smoke test
-→ SHA-256 → commit + push → release no GitHub (metadados, depois assets) → verificação
+bump (2 lugares) → gate → build do updater → build do .exe/instalador → smoke test
+→ sync R2 (diff + manifesto assinado) → SHA-256 → commit + push
+→ release no GitHub (metadados, depois assets) → verificação
 ```
 
-- **Canal de distribuição**: **GitHub Releases** (`spigknot/PDF-agent`). Não há
-  updater nem R2 — o usuário baixa o instalador e pronto.
-- **Assets da release**: `PDFagent-Setup-<versao>.exe` (instalador, canal
-  principal) e `PDFagent.exe` (portátil, sem instalação). Mais nada.
+- **Canais de distribuição**: **GitHub Releases** (`spigknot/PDF-agent`) para a
+  primeira instalação/reparo e **Cloudflare R2** (bucket `pdf-agent`) para as
+  atualizações por diff que o próprio app baixa.
+- **Assets da release**: `PDFagent-Setup-<versao>.exe` (instalador),
+  `PDFagent.exe` (portátil), `PDFagent-onedir-<versao>.zip` (pacote completo
+  para reparo via updater) e `SHA256SUMS-<versao>.txt`.
 - **`dist/` e `build/` nunca vão para o git** (ver `.gitignore`): binário só
   existe na release.
 
@@ -136,11 +139,37 @@ powershell -NoProfile -Command "Test-Path 'HKCU:\Software\Classes\SystemFileAsso
 "$LOCALAPPDATA/Programs/PDFagent/PDFagent.exe" --version
 ```
 
+## 4b. Updater (R2 + GitHub)
+
+```bash
+py -3.11 scripts/build_updater.py            # dist/PDFagentUpdater.exe
+py -3.11 scripts/build_exe.py                # copia o updater para dist/PDFagent/
+py -3.11 scripts/empacota_full.py            # dist/PDFagent-onedir-<versao>.zip
+py -3.11 scripts/sync_r2.py --package dist/PDFagent --version <versao>
+# ↑ publica o diff no R2 e o sync_manifest.json assinado
+```
+
+- O `--package` aponta SEMPRE para `dist/PDFagent` (nunca a raiz do projeto).
+- Antes de publicar, rode o harness (nao toca no bucket):
+
+```bash
+py -3.11 tools/harness_updater.py
+# esperado: PASS: diff aplicado, orfao removido, start verificado, rollback ok
+```
+
+- `release/r2_config.json` e `release/update_private_key.pem` nunca vao para o
+  git. Sem eles o `sync_r2.py` aborta.
+- A versao publicada no R2 DEVE conter `PDFagentUpdater.exe` (senao o app
+  instalado nao consegue se atualizar).
+- `py -3.11 scripts/sync_r2.py ... --dry-run` mostra o diff sem subir nada;
+  `--prune` remove do bucket o que nao esta no pacote.
+
 ## 5. SHA-256 dos artefatos
 
 ```bash
 cd /d/Projetos/PDF-agent/dist
-sha256sum PDFagent.exe PDFagent-Setup-<versao>.exe | tee SHA256SUMS-<versao>.txt
+sha256sum PDFagent.exe PDFagent-Setup-<versao>.exe \
+  PDFagent-onedir-<versao>.zip | tee SHA256SUMS-<versao>.txt
 ```
 
 Guarde os hashes: entram nas notas da release e servem para conferir o download.
@@ -173,6 +202,7 @@ gh release create v<versao> --repo spigknot/PDF-agent \
 
 gh release upload v<versao> ./PDFagent-Setup-<versao>.exe --repo spigknot/PDF-agent
 gh release upload v<versao> ./PDFagent.exe --repo spigknot/PDF-agent
+gh release upload v<versao> ./PDFagent-onedir-<versao>.zip --repo spigknot/PDF-agent
 gh release upload v<versao> ./SHA256SUMS-<versao>.txt --repo spigknot/PDF-agent
 ```
 
@@ -186,7 +216,7 @@ gh release view v<versao> --repo spigknot/PDF-agent --json tagName,url,assets \
   --jq '{tag:.tagName, url:.url, assets:[.assets[]|{name, size}]}'
 ```
 
-Deve listar exatamente os três assets. Depois, baixe e confira o hash:
+Deve listar exatamente os quatro assets. Depois, baixe e confira o hash:
 
 ```bash
 T="$LOCALAPPDATA/Temp/dl"; rm -rf "$T"; mkdir -p "$T"
@@ -220,9 +250,11 @@ rodada.
 - [ ] `VERSAO` == `#define Versao`
 - [ ] `scripts/verificar.py` → PASS, `0/21`
 - [ ] `dist/PDFagent.exe` gerado e `--version` correto
+- [ ] `dist/PDFagentUpdater.exe` no pacote e `sync_r2.py` publicado (manifesto assinado)
 - [ ] `dist/PDFagent-Setup-<v>.exe` gerado, instala e cria PATH + menu
+- [ ] `dist/PDFagent-onedir-<v>.zip` gerado
 - [ ] smoke `--in-place` deixou `<nome>_old.pdf`
 - [ ] `SHA256SUMS-<v>.txt` gerado
 - [ ] commit + push feitos **antes** da release
-- [ ] release com 3 assets e `gh release view` conferido
+- [ ] release com 4 assets e `gh release view` conferido
 - [ ] download + `sha256sum -c` conferido

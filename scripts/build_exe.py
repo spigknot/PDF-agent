@@ -74,6 +74,20 @@ def _build(onedir=False, debug=False):
     return 0
 
 
+def _copia_updater():
+    """Leva o PDFagentUpdater.exe para dentro do onedir (o instalador embarca
+    a pasta inteira e o manifesto do R2 cobra esse arquivo)."""
+    import shutil
+    exe = os.path.join(RAIZ, "dist", "PDFagentUpdater.exe")
+    if not os.path.isfile(exe):
+        print("ERRO: falta dist/PDFagentUpdater.exe — rode scripts/build_updater.py antes")
+        return 1
+    destino = os.path.join(RAIZ, "dist", "PDFagent", "PDFagentUpdater.exe")
+    shutil.copy2(exe, destino)
+    print("updater copiado para %s" % destino)
+    return 0
+
+
 def main(argv):
     so_onedir = "--onedir" in argv
     so_onefile = "--onefile" in argv
@@ -83,6 +97,8 @@ def main(argv):
     ok = True
     if quer_onedir:
         ok = (_build(True, debug) == 0) and ok
+        if ok:
+            ok = (_copia_updater() == 0) and ok
         if ok:
             subprocess.run([sys.executable,
                             os.path.join(RAIZ, "scripts", "gerar_shims.py")], cwd=RAIZ)
