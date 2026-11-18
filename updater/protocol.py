@@ -38,8 +38,8 @@ SYNC_REQUIRED_FILES = (
     "PDFagentUpdater.exe",
     "_internal/base_library.zip",
     "_internal/python311.dll",
-    "_internal/vcruntime140.dll",
-    "_internal/vcruntime140_1.dll",
+    "_internal/VCRUNTIME140.dll",
+    "_internal/VCRUNTIME140_1.dll",
 )
 # Top-levels que o updater gerencia (baixa e remove orfaos).
 SYNC_MANAGED_TOP_LEVELS = (

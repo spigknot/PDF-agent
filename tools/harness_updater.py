@@ -24,8 +24,8 @@ def _pkg(base: Path, marca: bytes) -> None:
         "pdfsplit.cmd": b"@echo",
         "_internal/base_library.zip": b"bl",
         "_internal/python311.dll": b"dll",
-        "_internal/vcruntime140.dll": b"dll",
-        "_internal/vcruntime140_1.dll": b"dll",
+        "_internal/VCRUNTIME140.dll": b"dll",
+        "_internal/VCRUNTIME140_1.dll": b"dll",
     }.items():
         (base / rel).write_bytes(dados)
 

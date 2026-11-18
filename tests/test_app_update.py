@@ -34,8 +34,8 @@ def test_download_seletivo_so_do_exe(tmp_path):
         "pdfsplit.cmd": b"@echo",
         "_internal/base_library.zip": b"bl",
         "_internal/python311.dll": b"dll",
-        "_internal/vcruntime140.dll": b"dll",
-        "_internal/vcruntime140_1.dll": b"dll",
+        "_internal/VCRUNTIME140.dll": b"dll",
+        "_internal/VCRUNTIME140_1.dll": b"dll",
     }
     for rel, dados in arquivos_locais.items():
         (alvo / rel).write_bytes(dados)

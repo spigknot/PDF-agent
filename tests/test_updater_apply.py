@@ -15,8 +15,8 @@ def _instala(dst, marca: bytes) -> None:
     (dst / "pdfsplit.cmd").write_bytes(b"@echo")
     (dst / "_internal" / "base_library.zip").write_bytes(b"bl")
     (dst / "_internal" / "python311.dll").write_bytes(b"dll")
-    (dst / "_internal" / "vcruntime140.dll").write_bytes(b"dll")
-    (dst / "_internal" / "vcruntime140_1.dll").write_bytes(b"dll")
+    (dst / "_internal" / "VCRUNTIME140.dll").write_bytes(b"dll")
+    (dst / "_internal" / "VCRUNTIME140_1.dll").write_bytes(b"dll")
 
 
 def test_aplica_diff_remove_orfao_e_pede_start(tmp_path, monkeypatch):

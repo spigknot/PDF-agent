@@ -53,8 +53,8 @@ REQUIRED_CORE_FILES = (
     "PDFagent.exe",
     "_internal/base_library.zip",
     "_internal/python311.dll",
-    "_internal/vcruntime140.dll",
-    "_internal/vcruntime140_1.dll",
+    "_internal/VCRUNTIME140.dll",
+    "_internal/VCRUNTIME140_1.dll",
 )
 REQUIRED_RUNTIME_FILES = ("pdfcompress.cmd", "pdfsplit.cmd")
 REQUIRED_UPDATE_FILES = REQUIRED_CORE_FILES + ("PDFagentUpdater.exe",)

@@ -63,9 +63,9 @@ O log da atualização fica em `%LOCALAPPDATA%\Programs\PDFagent\updater.log`.
 ## SHA-256
 
 ```
-4a13bf7779fcb2edfc3ee465c26f596e3c1883367579ebd89fe22bc7878c96a1  PDFagent-Setup-1.2.0.exe
-32e99bbc0786b61089f98ffba39f833197221e677a7b6a50b4bcd6a91b1c2174  PDFagent.exe
-ccc5d35a57a1b993d08d39778e916d093d351b1b0e4032b5b3cba1dc096605ed  PDFagent-onedir-1.2.0.zip
+b745f730ceab8b2c13adf5e8f556c01885c4cdc76e9c90442387cc327cbb416b  PDFagent-Setup-1.2.0.exe
+d5e365222c18178d661175c9eb36372436e4c5e9b5d28662a19899627de3f4bb  PDFagent.exe
+281c6346f50d6e36ab278c6dc68565940a1cb8225967cf61880e67415205a361  PDFagent-onedir-1.2.0.zip
 ```
 
 ## Limitações conhecidas
