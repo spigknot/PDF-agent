@@ -3,7 +3,7 @@
 ; Compilar:  "C:\Users\<user>\AppData\Local\Programs\Inno Setup 6\ISCC.exe" PDFagent.iss
 
 #define Nome "PDFagent"
-#define Versao "1.3.0"
+#define Versao "1.3.1"
 #define Exe "PDFagent.exe"
 
 [Setup]
@@ -12,10 +12,13 @@ AppName={#Nome}
 AppVersion={#Versao}
 AppVerName={#Nome} {#Versao}
 AppPublisher=Gustavo Almeida
-DefaultDirName={localappdata}\Programs\{#Nome}
+DefaultDirName={autopf}\{#Nome}
 DefaultGroupName={#Nome}
 DisableProgramGroupPage=yes
-PrivilegesRequired=lowest
+; O UAC e' pedido pelo PROPRIO instalador (um clique em Sim): o usuario nao
+; precisa de "Executar como administrador". A pasta fica gravavel pelo
+; usuario (ver [Dirs]) para o updater por diff funcionar sem admin.
+PrivilegesRequired=admin
 OutputDir=..\dist
 OutputBaseFilename=PDFagent-Setup-{#Versao}
 Compression=lzma2/max
@@ -25,6 +28,10 @@ UninstallDisplayIcon={app}\{#Exe}
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 SetupLogging=yes
+; NUNCA reutilizar a pasta de uma instalacao anterior: se alguem instalou
+; como admin em C:\Program Files, o registro grava esse caminho e a
+; proxima execucao sem admin falha com 'Erro 5: Acesso negado'.
+UsePreviousAppDir=no
 
 [Languages]
 Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortuguese.isl"
@@ -33,12 +40,17 @@ Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortugue
 Name: "addpath"; Description: "Adicionar ao PATH do usuário (permite chamar ""PDFagent"" pelo terminal)"
 Name: "contextmenu"; Description: "Adicionar ""PDFagent > Comprimir"" ao menu de contexto de arquivos PDF"
 
+[Dirs]
+; O app e o updater escrevem na pasta em runtime (staged/updates) SEM admin.
+Name: "{app}"; Permissions: users-modify
+
 [Files]
 ; onedir: pasta inteira (start ~0,3 s). O onefile continua na release como portátil.
 Source: "..\dist\PDFagent\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#Nome}"; Filename: "{app}\{#Exe}"
+Name: "{group}\Atualizador do {#Nome}"; Filename: "{app}\PDFagentUpdater.exe"
 Name: "{group}\Desinstalar {#Nome}"; Filename: "{uninstallexe}"
 
 [Registry]
@@ -57,6 +69,43 @@ Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.pdf\shell\PDFagent
 Filename: "{app}\{#Exe}"; Description: "Abrir o {#Nome} agora"; Flags: nowait postinstall skipifsilent
 
 [Code]
+function InitializeSetup(): Boolean;
+var
+  Antigo: String;
+  Codigo: Integer;
+  Erro: Integer;
+begin
+  Result := True;
+
+  { O Inno 6.7 usa loader asInvoker e nem sempre pede elevacao: garantimos aqui.
+    Program Files exige admin, e o uninstaller precisa rodar no mesmo modo. }
+  if not IsAdmin then
+  begin
+    ShellExec('runas', ExpandConstant('{srcexe}'), '', '',
+              SW_SHOWNORMAL, ewNoWait, Erro);
+    Result := False;
+    exit;
+  end;
+
+  Antigo := ExpandConstant('{localappdata}\Programs\{#Nome}\unins000.exe');
+  if FileExists(Antigo) then
+  begin
+    if MsgBox('Foi encontrada uma instalacao antiga por usuario em:' + #13#10 +
+              ExpandConstant('{localappdata}\Programs\{#Nome}') + #13#10#13#10 +
+              'Ela sera removida para o {#Nome} ficar em uma pasta so. Continuar?',
+              mbConfirmation, MB_YESNO) = IDYES then
+      Exec(Antigo, '/VERYSILENT /NORESTART', '', SW_HIDE, ewWaitUntilTerminated, Codigo)
+    else
+      Result := False;
+  end;
+end;
+
+procedure InitializeWizard();
+begin
+  { PDFagent e' per-usuario: ignora o que o registro tiver de instalacao antiga. }
+  WizardForm.DirEdit.Text := ExpandConstant('{autopf}\{#Nome}');
+end;
+
 function SendMessageTimeout(hWnd: Longint; Msg: Longint; wParam: Longint;
   lParam: Longint; fuFlags: Longint; uTimeout: Longint;
   var lpdwResult: Longint): Longint;
