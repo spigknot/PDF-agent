@@ -3,7 +3,7 @@
 ; Compilar:  "C:\Users\<user>\AppData\Local\Programs\Inno Setup 6\ISCC.exe" PDFagent.iss
 
 #define Nome "PDFagent"
-#define Versao "1.2.1"
+#define Versao "1.3.0"
 #define Exe "PDFagent.exe"
 
 [Setup]

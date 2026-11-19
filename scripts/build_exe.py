@@ -80,8 +80,12 @@ def _build(onedir=False, debug=False):
 
 def _copia_updater():
     """Leva o PDFagentUpdater.exe para dentro do onedir (o instalador embarca
-    a pasta inteira e o manifesto do R2 cobra esse arquivo)."""
+    a pasta inteira e o manifesto do R2 cobra esse arquivo) e escreve o
+    build-info.json, que e' de onde o updater le a versao instalada."""
+    import json
     import shutil
+    import time
+
     exe = os.path.join(RAIZ, "dist", "PDFagentUpdater.exe")
     if not os.path.isfile(exe):
         print("ERRO: falta dist/PDFagentUpdater.exe — rode scripts/build_updater.py antes")
@@ -89,6 +93,20 @@ def _copia_updater():
     destino = os.path.join(RAIZ, "dist", "PDFagent", "PDFagentUpdater.exe")
     shutil.copy2(exe, destino)
     print("updater copiado para %s" % destino)
+    # versao sem importar compress (o script roda de scripts/, sem o repo no path)
+    import re
+
+    with open(os.path.join(RAIZ, "compress.py"), encoding="utf-8") as f:
+        m = re.search(r'^VERSAO = "([^"]+)"', f.read(), re.M)
+    versao = m.group(1) if m else "0.0.0"
+
+    info = os.path.join(RAIZ, "dist", "PDFagent", "build-info.json")
+    with open(info, "w", encoding="utf-8", newline="\n") as f:
+        json.dump({"version": versao,
+                   "built_at": time.strftime("%Y-%m-%dT%H:%M:%S%z")},
+                  f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    print("build-info.json: versao %s" % versao)
     return 0
 
 

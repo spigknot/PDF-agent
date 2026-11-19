@@ -19,11 +19,13 @@ from contextlib import contextmanager
 import hashlib
 import json
 import os
+import queue
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -35,6 +37,7 @@ from updater.protocol import (  # noqa: E402
     SyncError,
     canonical_manifest,
     classify_files,
+    fetch_manifest,
     sha256_file,
     validate_manifest,
     version_key,
@@ -68,6 +71,7 @@ ALLOWED_TOP_LEVEL_NAMES = {
     "pdfcompress.cmd",
     "pdfsplit.cmd",
     "_internal",
+    "build-info.json",
     "removidos.txt",
     "updater.log",
     "temp",
@@ -1153,9 +1157,7 @@ def _transaction_root() -> Path:
     nao e' gravavel e o mkdtemp ali trava. O %LOCALAPPDATA%/PDFagent/updater e'
     sempre gravavel (Inno per-usuario e onedir).
     """
-    local = os.environ.get("LOCALAPPDATA")
-    base = Path(local) if local else Path(tempfile.gettempdir())
-    root = base / "PDFagent" / "updater" / "transactions"
+    root = _standalone_cache_root() / "transactions"
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -1211,6 +1213,626 @@ def _avisa_sem_argumentos() -> None:
     print(texto)
 
 
+def _standalone_cache_root() -> Path:
+    local = os.environ.get("LOCALAPPDATA")
+    base = Path(local) if local else Path(tempfile.gettempdir())
+    return base / "PDFagent" / "updater"
+
+
+def _standalone_log_path(target: Path) -> Path:
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        probe = target / f".pdfagent-updater-write-{uuid.uuid4().hex}.tmp"
+        probe.write_bytes(b"")
+        probe.unlink()
+        return target / "updater.log"
+    except OSError:
+        fallback = _standalone_cache_root() / "updater.log"
+        fallback.parent.mkdir(parents=True, exist_ok=True)
+        return fallback
+
+
+def _relocate_standalone_updater(origin: Path) -> int:
+    helpers_root = _standalone_cache_root() / "helpers"
+    helpers_root.mkdir(parents=True, exist_ok=True)
+    for previous in helpers_root.iterdir():
+        try:
+            if previous.is_dir():
+                shutil.rmtree(previous)
+            else:
+                previous.unlink()
+        except OSError:
+            # Windows keeps a running helper locked. A simultaneous updater
+            # remains untouched and the new one uses a unique directory.
+            pass
+    helper_root = helpers_root / uuid.uuid4().hex
+    helper_root.mkdir(parents=True, exist_ok=True)
+    helper = helper_root / "PDFagentUpdater.exe"
+    shutil.copy2(Path(sys.executable).resolve(), helper)
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(
+        subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+    )
+    subprocess.Popen(
+        [
+            str(helper),
+            "--standalone-worker",
+            "--standalone-target",
+            str(origin),
+        ],
+        cwd=str(origin),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=flags,
+        close_fds=True,
+    )
+    return 0
+
+
+def installed_version(target: Path) -> str | None:
+    """Versao instalada, lida de build-info.json (escrito pelo build_exe)."""
+    metadata_path = Path(target) / "build-info.json"
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        version = str(metadata.get("version") or "")
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return version if VERSION_RE.fullmatch(version) else None
+
+
+class StandaloneUpdaterUI:
+    def __init__(self, target: Path):
+        import tkinter as tk
+        from tkinter import filedialog, messagebox, ttk
+
+        self.tk = tk
+        self.ttk = ttk
+        self.filedialog = filedialog
+        self.messagebox = messagebox
+        self.target = Path(target).resolve()
+        self.events: queue.Queue[tuple] = queue.Queue()
+        self.sync_state: dict | None = None
+        self.full: dict | None = None
+        self.full_releases: list[dict] = []
+        self.manual_zip: Path | None = None
+        self.busy = False
+
+        self.root = tk.Tk()
+        self.root.title("Atualizador do PDFagent")
+        self.root.geometry("620x430")
+        self.root.minsize(580, 410)
+        self.root.option_add("*Font", ("Segoe UI", 10))
+        self.root.protocol("WM_DELETE_WINDOW", self._close)
+
+        style = ttk.Style(self.root)
+        style.configure("Title.TLabel", font=("Segoe UI Semibold", 18))
+        style.configure("Accent.TButton", foreground="#13753b")
+
+        container = ttk.Frame(self.root, padding=18)
+        container.pack(fill="both", expand=True)
+        ttk.Label(container, text="Atualizador do PDFagent", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(
+            container,
+            text=(
+                "Atualize uma instalação existente ou use o pacote completo para "
+                "instalar e reparar o aplicativo."
+            ),
+            wraplength=570,
+        ).pack(anchor="w", pady=(3, 14))
+
+        path_row = ttk.Frame(container)
+        path_row.pack(fill="x")
+        ttk.Label(path_row, text="Pasta do PDFagent:").pack(side="left")
+        self.path_var = tk.StringVar(value=str(self.target))
+        ttk.Entry(path_row, textvariable=self.path_var, state="readonly").pack(
+            side="left", fill="x", expand=True, padx=(8, 6)
+        )
+        self.choose_button = ttk.Button(path_row, text="Escolher...", command=self._choose_target)
+        self.choose_button.pack(side="right")
+
+        self.installed_var = tk.StringVar()
+        self.available_var = tk.StringVar(value="Consultando versões disponíveis...")
+        ttk.Label(container, textvariable=self.installed_var).pack(anchor="w", pady=(14, 2))
+        ttk.Label(container, textvariable=self.available_var, wraplength=570).pack(anchor="w")
+
+        self.progress = ttk.Progressbar(container, mode="determinate", maximum=100)
+        self.progress.pack(fill="x", pady=(16, 5))
+        self.status_var = tk.StringVar(value="Aguardando.")
+        ttk.Label(container, textvariable=self.status_var).pack(anchor="w")
+
+        actions = ttk.Frame(container)
+        actions.pack(fill="x", pady=(16, 10))
+        self.check_button = ttk.Button(actions, text="Verificar", command=self.check_updates)
+        self.check_button.pack(side="left")
+        self.incremental_button = ttk.Button(
+            actions,
+            text="Atualizar",
+            style="Accent.TButton",
+            command=self._install_update,
+            state="disabled",
+        )
+        self.incremental_button.pack(side="left", padx=(8, 0))
+        self.full_button = ttk.Button(
+            actions,
+            text="Instalar / reparar completo",
+            command=lambda: self.install("full"),
+            state="disabled",
+        )
+        self.full_button.pack(side="left", padx=(8, 0))
+        self.choose_zip_button = ttk.Button(
+            actions,
+            text="Escolher ZIP...",
+            command=self._choose_manual_zip,
+        )
+        self.choose_zip_button.pack(side="left", padx=(8, 0))
+
+        version_row = ttk.Frame(container)
+        version_row.pack(fill="x", pady=(0, 10))
+        ttk.Label(version_row, text="Versão do pacote completo:").pack(side="left")
+        self.full_version_var = tk.StringVar(value="(mais recente)")
+        self.full_version_combo = ttk.Combobox(
+            version_row,
+            textvariable=self.full_version_var,
+            state="readonly",
+            width=26,
+        )
+        self.full_version_combo.pack(side="left", padx=(8, 0))
+        self.full_version_combo.bind("<<ComboboxSelected>>", self._on_full_version_selected)
+
+        self.log = tk.Text(
+            container,
+            height=6,
+            state="disabled",
+            wrap="word",
+            background="#f4f6f5",
+            relief="solid",
+            borderwidth=1,
+        )
+        self.log.pack(fill="both", expand=True)
+        self._refresh_installed_version()
+        self.root.after(80, self._poll_events)
+        self.root.after(250, self.check_updates)
+
+    @staticmethod
+    def _format_size(value: int) -> str:
+        size = float(value)
+        for unit in ("B", "KB", "MB", "GB"):
+            if size < 1024 or unit == "GB":
+                return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
+            size /= 1024
+        return f"{size:.1f} GB"
+
+    def _write_log(self, message: str) -> None:
+        self.log.configure(state="normal")
+        self.log.insert("end", time.strftime("%H:%M:%S  ") + message + "\n")
+        self.log.see("end")
+        self.log.configure(state="disabled")
+
+    def _refresh_installed_version(self) -> None:
+        version = installed_version(self.target)
+        if version:
+            text = f"Versão instalada: {version}"
+        elif (self.target / "PDFagent.exe").is_file():
+            text = "Versão instalada: não identificada"
+        else:
+            text = "PDFagent ainda não instalado nesta pasta."
+        self.installed_var.set(text)
+
+    def _choose_target(self) -> None:
+        selected = self.filedialog.askdirectory(
+            title="Escolha a pasta de instalação do PDFagent",
+            initialdir=str(self.target if self.target.exists() else self.target.parent),
+            mustexist=False,
+        )
+        if not selected:
+            return
+        self.target = Path(selected).resolve()
+        self.path_var.set(str(self.target))
+        self._refresh_installed_version()
+
+    def _set_busy(self, busy: bool, status: str | None = None) -> None:
+        self.busy = busy
+        normal = "disabled" if busy else "normal"
+        self.check_button.configure(state=normal)
+        self.choose_button.configure(state=normal)
+        self.choose_zip_button.configure(state=normal)
+        self.full_version_combo.configure(state="disabled" if busy else "readonly")
+        self.incremental_button.configure(
+            state="normal" if not busy and self.sync_state else "disabled"
+        )
+        full_available = bool(self.full or self.manual_zip)
+        self.full_button.configure(state="normal" if not busy and full_available else "disabled")
+        if status:
+            self.status_var.set(status)
+
+    def check_updates(self) -> None:
+        if self.busy:
+            return
+        self.progress["value"] = 0
+        self._set_busy(True, "Consultando o R2 e o GitHub...")
+        self._write_log("Verificando pacotes disponíveis.")
+        threading.Thread(target=self._check_worker, daemon=True).start()
+
+    def _check_worker(self) -> None:
+        errors = []
+        notice = None
+        sync_state = None
+        full_releases: list[dict] = []
+        installed = installed_version(self.target)
+        try:
+            sync_manifest = fetch_manifest()
+            if installed and version_key(sync_manifest["version"]) <= version_key(installed):
+                notice = (
+                    f"Sincronização {sync_manifest['version']} ignorada: "
+                    f"a versão instalada ({installed}) já é igual ou mais nova."
+                )
+            else:
+                classification = classify_files(self.target, sync_manifest["files"])
+                sync_state = {
+                    "kind": "sync",
+                    "version": sync_manifest["version"],
+                    "files": sync_manifest["files"],
+                    "download": classification["download"],
+                    "remove": classification["remove"],
+                    "unchanged": classification["unchanged"],
+                    "total": classification["total"],
+                }
+        except Exception as exc:
+            errors.append(f"sincronização R2: {exc}")
+        try:
+            full_releases = fetch_full_releases()
+        except Exception as exc:
+            errors.append(f"completo: {exc}")
+        self.events.put(("checked", sync_state, full_releases, errors, notice))
+
+    def _on_full_version_selected(self, _event=None) -> None:
+        selected = self.full_version_var.get()
+        for descriptor in self.full_releases:
+            if str(descriptor.get("version")) == selected:
+                self.full = dict(descriptor)
+                self._set_busy(False, f"Pacote completo {selected} selecionado.")
+                self._write_log(
+                    f"Pacote completo selecionado: {selected} "
+                    f"({self._format_size(int(descriptor['size']))})."
+                )
+                return
+
+    def _choose_manual_zip(self) -> None:
+        if self.busy:
+            return
+        selected = self.filedialog.askopenfilename(
+            title="Escolha o pacote completo (.zip) baixado manualmente",
+            initialdir=str(self.target.parent if self.target.exists() else Path.cwd()),
+            filetypes=(("Pacote PDFagent", "*.zip"), ("Todos os arquivos", "*.*")),
+        )
+        if not selected:
+            return
+        path = Path(selected).resolve()
+        if not path.is_file():
+            self.messagebox.showerror("Pacote completo", "O arquivo escolhido não existe.")
+            return
+        version = zip_version(path)
+        if version is None:
+            self.messagebox.showerror(
+                "Pacote completo",
+                "O arquivo escolhido não parece ser um pacote completo do PDFagent "
+                "(build-info.json com versão válida não encontrado).",
+            )
+            return
+        try:
+            validate_zip(path, full=True)
+        except UpdateError as exc:
+            self.messagebox.showerror(
+                "Pacote completo",
+                f"O pacote escolhido foi recusado na validação:\n\n{exc}",
+            )
+            return
+        self.manual_zip = path
+        self.full_version_var.set(f"Manual: {version}")
+        self._write_log(
+            f"Pacote manual selecionado: {path.name} (versão {version})."
+        )
+        self._set_busy(False, f"Pacote manual {version} pronto para instalar.")
+
+    def _confirm_regression(self, descriptor: dict) -> bool:
+        installed = installed_version(self.target)
+        target_version = str(descriptor.get("version") or "")
+        if not installed or not target_version or version_key(target_version) >= version_key(installed):
+            return True
+        if not self.messagebox.askyesno(
+            "Regressão de versão",
+            "ATENÇÃO: REGRESSÃO DE VERSÃO\n\n"
+            f"A versão instalada é {installed} e o pacote selecionado é {target_version}.\n\n"
+            "Instalar este pacote REVERTERÁ o PDFagent para um estado mais antigo.\n"
+            "Use apenas para corrigir um problema grave introduzido por uma "
+            "versão mais nova.\n\n"
+            "Deseja continuar mesmo assim?",
+            icon="warning",
+        ):
+            return False
+        return self.messagebox.askyesno(
+            "Regressão de versão",
+            f"Confirmação final: instalar a versão ANTIGA {target_version} "
+            f"por cima da {installed}?\n\nEsta ação sobrescreverá arquivos da "
+            "instalação atual.",
+            icon="warning",
+        )
+
+    def install(self, kind: str) -> None:
+        if self.busy:
+            return
+        if kind == "sync":
+            if not self.sync_state:
+                return
+            try:
+                validate_target_shell(self.target)
+            except UpdateError as exc:
+                self.messagebox.showerror(
+                    "Atualização",
+                    f"A instalação não pode ser sincronizada.\\n\\n{exc}\\n\\nUse o pacote completo.",
+                    parent=self.root,
+                )
+                return
+            if len(self.sync_state["download"]) > 100:
+                if not self.messagebox.askyesno(
+                    "Muitos arquivos para baixar",
+                    f"A sincronização precisa baixar {len(self.sync_state['download'])} arquivos. "
+                    "Para instalações muito desatualizadas, o pacote completo é mais rápido "
+                    "e confiável.\\n\\n"
+                    "Deseja usar o pacote completo do GitHub em vez da sincronização?",
+                    icon="warning",
+                    parent=self.root,
+                ):
+                    pass
+                else:
+                    self.install("full")
+                    return
+            self.progress["value"] = 0
+            self._set_busy(True, "Baixando arquivos da sincronização...")
+            self._write_log(
+                f"Sincronização {self.sync_state['version']}: "
+                f"{len(self.sync_state['download'])} arquivo(s) para baixar, "
+                f"{len(self.sync_state['remove'])} para remover."
+            )
+            threading.Thread(
+                target=self._sync_install_worker,
+                args=(self.sync_state,),
+                daemon=True,
+            ).start()
+            return
+        if kind == "manual":
+            if not self.manual_zip:
+                return
+            version = zip_version(self.manual_zip) or ""
+            descriptor = {
+                "kind": "manual",
+                "version": version,
+                "zip_name": self.manual_zip.name,
+                "local_zip": str(self.manual_zip),
+                "size": self.manual_zip.stat().st_size,
+                "sha256": "",
+            }
+        else:
+            descriptor = self.full
+        if not descriptor:
+            return
+        if kind == "manual":
+            if not self._confirm_regression(descriptor):
+                return
+            warning = (
+                f"O pacote manual {descriptor['zip_name']} (versão {descriptor['version']}) "
+                "será instalado por cima da instalação atual.\n\n"
+                "O PDFagent aberto será fechado. Continuar?"
+            )
+        else:
+            if not self._confirm_regression(descriptor):
+                return
+            warning = (
+                f"O pacote completo {descriptor['version']} ({self._format_size(descriptor['size'])}) "
+                "será instalado. Ele pode reparar uma instalação quebrada ou criar uma nova.\n\n"
+                "O PDFagent aberto será fechado. Continuar?"
+            )
+        if not self.messagebox.askyesno("Atualizador do PDFagent", warning):
+            return
+        self.progress["value"] = 0
+        self._set_busy(True, "Preparando o download..." if kind != "manual" else "Preparando a instalação...")
+        threading.Thread(
+            target=self._install_worker,
+            args=(dict(descriptor), kind),
+            daemon=True,
+        ).start()
+
+    def _install_worker(self, descriptor: dict, kind: str) -> None:
+        version = str(descriptor["version"])
+        try:
+            if descriptor.get("local_zip"):
+                zip_path = Path(str(descriptor["local_zip"])).resolve()
+                if not zip_path.is_file():
+                    raise UpdateError("o pacote manual não está mais disponível")
+            else:
+                download_root = _standalone_cache_root() / "downloads" / version / kind
+                zip_path = download_root / str(descriptor["zip_name"])
+                download_root.mkdir(parents=True, exist_ok=True)
+
+                def progress(downloaded: int, total: int) -> None:
+                    percent = min(100, int(downloaded * 100 / max(1, total)))
+                    self.events.put(("progress", percent, downloaded, total))
+
+                self.events.put(("status", f"Baixando {descriptor['zip_name']}..."))
+                _download_to_file(descriptor, zip_path, progress)
+            self.events.put(("status", "Validando o pacote antes de alterar a instalação..."))
+            validate_zip(zip_path, full=True)
+            log_path = _standalone_log_path(self.target)
+            if getattr(sys, "frozen", False) and _same_path(sys.executable, self.target / "PDFagentUpdater.exe"):
+                raise UpdateError("o atualizador não foi realocado para a pasta temporária")
+            _terminate_target_pdfagent_processes(self.target / "PDFagent.exe", log_path)
+            self.events.put(("status", "Aplicando a atualização com rollback protegido..."))
+            execute(
+                zip_path,
+                self.target,
+                0,
+                log_path,
+                updater_override=Path(sys.executable) if getattr(sys, "frozen", False) else None,
+            )
+            if not descriptor.get("local_zip"):
+                zip_path.unlink(missing_ok=True)
+            self.events.put(("installed", version, log_path))
+        except Exception as exc:
+            self.events.put(("failed", str(exc)))
+
+    def _install_update(self) -> None:
+        """Instala somente a sincronização por arquivo publicada no R2."""
+        if self.sync_state:
+            self.install("sync")
+        else:
+            self._write_log("Nenhuma sincronização R2 disponível.")
+
+    def _sync_install_worker(self, sync_state: dict) -> None:
+        try:
+            version = str(sync_state["version"])
+            cache_root = _standalone_cache_root() / "sync" / version
+            staged = cache_root / "staged"
+            if staged.exists():
+                shutil.rmtree(staged)
+            staged.mkdir(parents=True)
+            downloads = list(sync_state["download"])
+            log_path = _standalone_log_path(self.target)
+            if getattr(sys, "frozen", False) and _same_path(sys.executable, self.target / "PDFagentUpdater.exe"):
+                raise UpdateError("o atualizador não foi realocado para a pasta temporária")
+            _terminate_target_pdfagent_processes(self.target / "PDFagent.exe", log_path)
+
+            def _download_one(path: str) -> None:
+                entry = sync_state["files"][path]
+                destination = staged / Path(*PurePosixPath(path).parts)
+                download_sync_file(entry, destination)
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+                futures = {pool.submit(_download_one, path): path for path in downloads}
+                completed = 0
+                for future in concurrent.futures.as_completed(futures):
+                    future.result()
+                    completed += 1
+                    self.events.put(("sync_file", completed, len(downloads), futures[future], 100))
+            self.events.put(("status", "Aplicando a sincronização com rollback protegido..."))
+            apply_sync_transaction(
+                staged,
+                self.target,
+                list(sync_state["remove"]),
+                12,
+                log_path,
+            )
+            self.events.put(("installed", version, log_path))
+        except Exception as exc:
+            self.events.put(("failed", str(exc)))
+
+    def _poll_events(self) -> None:
+        try:
+            while True:
+                event = self.events.get_nowait()
+                kind = event[0]
+                if kind == "checked":
+                    self.sync_state, self.full_releases, errors, notice = (
+                        event[1],
+                        event[2],
+                        event[3],
+                        event[4],
+                    )
+                    self.full = self.full_releases[0] if self.full_releases else None
+                    details = []
+                    if self.sync_state:
+                        download_count = len(self.sync_state["download"])
+                        download_size = sum(
+                            int(self.sync_state["files"][path]["size"])
+                            for path in self.sync_state["download"]
+                        )
+                        details.append(
+                            f"Sincronização: {self.sync_state['version']} "
+                            f"({download_count} arquivo(s), {self._format_size(download_size)})"
+                        )
+                    if self.full_releases:
+                        labels = [str(item["version"]) for item in self.full_releases]
+                        self.full_version_combo.configure(values=labels)
+                        self.full_version_var.set(labels[0])
+                        details.append(
+                            f"Completo: {labels[0]} "
+                            f"({self._format_size(int(self.full_releases[0]['size']))})"
+                        )
+                    self.available_var.set(" | ".join(details) or "Nenhum pacote disponível.")
+                    for error in errors:
+                        self._write_log("Não foi possível consultar o pacote " + error)
+                    if notice:
+                        self._write_log(notice)
+                    if details:
+                        self._write_log(
+                            f"Consulta concluída: {len(self.full_releases)} pacote(s) "
+                            "completo(s) disponíveis no GitHub."
+                        )
+                    self._set_busy(False, "Pronto.")
+                elif kind == "progress":
+                    _name, percent, downloaded, total = event
+                    self.progress["value"] = percent
+                    self.status_var.set(
+                        f"Baixando: {percent}% ({self._format_size(downloaded)} de "
+                        f"{self._format_size(total)})"
+                    )
+                elif kind == "sync_file":
+                    _index, _count, _path, _percent = event[1], event[2], event[3], event[4]
+                    self.progress["value"] = _percent
+                    self.status_var.set(
+                        f"Baixando arquivo {_index}/{_count}: {_path} ({_percent}%)"
+                    )
+                elif kind == "status":
+                    self.status_var.set(event[1])
+                    self._write_log(event[1])
+                elif kind == "installed":
+                    version, log_path = event[1], event[2]
+                    self.progress["value"] = 100
+                    self._set_busy(False, f"Versão {version} instalada e validada.")
+                    self._write_log(f"Instalação concluída. Log: {log_path}")
+                    self.messagebox.showinfo(
+                        "Atualizador do PDFagent",
+                        f"A versão {version} foi instalada e o PDFagent foi iniciado.",
+                    )
+                    self.root.destroy()
+                    return
+                elif kind == "failed":
+                    self._set_busy(False, "A operação falhou; a instalação anterior foi preservada.")
+                    self._write_log("Falha: " + event[1])
+                    self.messagebox.showerror(
+                        "Atualizador do PDFagent",
+                        "Não foi possível concluir a operação.\n\n" + event[1],
+                    )
+        except queue.Empty:
+            pass
+        if self.root.winfo_exists():
+            self.root.after(80, self._poll_events)
+
+    def _close(self) -> None:
+        if self.busy:
+            self.messagebox.showinfo(
+                "Atualizador do PDFagent",
+                "Aguarde a operação em andamento terminar.",
+            )
+            return
+        self.root.destroy()
+
+    def run(self) -> int:
+        self.root.mainloop()
+        return 0
+
+
+def run_standalone(target: Path | None = None, *, worker: bool = False) -> int:
+    if target is None:
+        if getattr(sys, "frozen", False):
+            target = Path(sys.executable).resolve().parent
+        else:
+            target = Path.cwd()
+    target = Path(target).resolve()
+    if getattr(sys, "frozen", False) and not worker:
+        return _relocate_standalone_updater(target)
+    return StandaloneUpdaterUI(target).run()
+
+
 def main(argv: list[str] | None = None) -> int:
     _garante_stdio()
     parser = argparse.ArgumentParser(description="PDFagentUpdater")
@@ -1227,11 +1849,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--sync-removals", type=Path,
                         help="lista de orfaos a remover (uso interno do app)")
     parser.add_argument("--sync-version", type=str, help="versao alvo (log)")
+    parser.add_argument("--standalone-worker", action="store_true",
+                        help=argparse.SUPPRESS)
+    parser.add_argument("--standalone-target", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
+    if args.standalone_worker:
+        return run_standalone(args.standalone_target, worker=True)
+
     if not any((args.sync_staged, args.zip, args.full)):
-        _avisa_sem_argumentos()
-        return 0
+        try:
+            return run_standalone()
+        except Exception as exc:      # tkinter ausente/quebrado: caixa simples
+            _log(Path(tempfile.gettempdir()) / "pdfagent-updater.log",
+                 "GUI indisponivel: %s" % exc)
+            _avisa_sem_argumentos()
+            return 1
 
     if args.sync_staged is not None:
         if not args.target or not args.log:

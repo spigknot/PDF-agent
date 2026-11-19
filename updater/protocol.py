@@ -48,6 +48,7 @@ SYNC_MANAGED_TOP_LEVELS = (
     "pdfcompress.cmd",
     "pdfsplit.cmd",
     "_internal",
+    "build-info.json",
 )
 SYNC_ALLOWED_TOP_LEVELS = set(SYNC_MANAGED_TOP_LEVELS) | {"removidos.txt",
                                                           "updater.log"}
