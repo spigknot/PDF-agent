@@ -49,6 +49,11 @@ bump (2 lugares) → gate → build do updater → build do .exe/instalador → 
 7. Não inventar número: todo dado do release (tamanho, % vs iLovePDF, PSNR) sai
    da execução real do gate/bateria.
 8. Ao terminar, atualize este documento se algo divergiu (seção 8).
+9. **NUNCA atualizar a instalação local do PC ao gerar release.** A instalação de
+   `C:\Program Files\PDFagent` fica **na versão anterior** de propósito: é o
+   único jeito de o updater por diff ser testado de verdade (o app abre, mostra
+   o botão verde e baixa só os arquivos que mudaram). O smoke do instalador usa
+   um diretório de teste (`/DIR=`) e o registro é limpo depois — ver §4.
 
 ## 1. Pré-requisitos
 
@@ -130,15 +135,26 @@ cp "C:/Users/Gustavo/Desktop/REA-lab/x/x.pdf" "$T/r.pdf"
 ls "$T"                                                # r.pdf (menor) + r_old.pdf
 ```
 
-Instalador (testa tarefas PATH + menu de contexto):
+Instalador — **NÃO rodar na máquina de desenvolvimento** (§0.2.9):
+
+Já existe instalação com o mesmo `AppId`, e o Inno então **reusa o `AppDir`
+e ignora `/DIR`** (confirmado no log: `Will append to existing uninstall log`).
+Rodar o setup aqui reinstala a versão nova e mata o teste do updater.
+
+Checagem de rotina (sem instalar):
 
 ```bash
-MSYS2_ARG_CONV_EXCL='*' ./dist/PDFagent-Setup-<versao>.exe /VERYSILENT /SUPPRESSMSGBOXES \
-  /NORESTART /TASKS="addpath,contextmenu"
-sleep 5
-powershell -NoProfile -Command "Test-Path 'HKCU:\Software\Classes\SystemFileAssociations\.pdf\shell\PDFagent'"
-"$LOCALAPPDATA/Programs/PDFagent/PDFagent.exe" --version
+"/c/Users/Gustavo/AppData/Local/Programs/Inno Setup 6/ISCC.exe" instalador/PDFagent.iss
+ls -la dist/PDFagent-Setup-<versao>.exe        # gerado, ~57 MB
+py -3.11 -c "import zipfile,sys; z=zipfile.ZipFile('dist/PDFagent-onedir-<v>.zip'); print(len(z.namelist()),'arquivos no pacote')"
 ```
+
+Se o `.iss` mudou de verdade (tarefas, PATH, menu, elevação), teste numa **VM ou
+máquina separada** — nunca aqui.
+
+Depois do release, o teste que importa é o **updater**: com a instalação local
+na versão anterior, abrir o app e usar o botão verde (diff) — conferir
+`build-info.json` novo e que `PDFagentUpdater.exe` rodou sem UAC.
 
 ## 4b. Updater (R2 + GitHub)
 
@@ -263,7 +279,8 @@ rodada.
 - [ ] `dist/PDFagentUpdater.exe` sem argumentos abre a **GUI do atualizador**
 - [ ] `dist/PDFagent/build-info.json` com a versão do release
 - [ ] `dist/PDFagentUpdater.exe` no pacote e `sync_r2.py` publicado (manifesto assinado)
-- [ ] `dist/PDFagent-Setup-<v>.exe` gerado, instala e cria PATH + menu
+- [ ] `dist/PDFagent-Setup-<v>.exe` gerado (ISCC rc=0) — setup **não** roda na máquina de dev
+- [ ] instalação local do PC **continua na versão anterior** (updater testável)
 - [ ] `dist/PDFagent-onedir-<v>.zip` gerado
 - [ ] smoke `--in-place` deixou `<nome>_old.pdf`
 - [ ] `SHA256SUMS-<v>.txt` gerado

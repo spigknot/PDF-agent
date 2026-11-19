@@ -3,7 +3,7 @@
 ; Compilar:  "C:\Users\<user>\AppData\Local\Programs\Inno Setup 6\ISCC.exe" PDFagent.iss
 
 #define Nome "PDFagent"
-#define Versao "1.3.3"
+#define Versao "1.3.4"
 #define Exe "PDFagent.exe"
 
 [Setup]
@@ -78,10 +78,13 @@ begin
   Result := True;
 
   { O Inno 6.7 usa loader asInvoker e nem sempre pede elevacao: garantimos aqui.
-    Program Files exige admin, e o uninstaller precisa rodar no mesmo modo. }
+    Program Files exige admin, e o uninstaller precisa rodar no mesmo modo.
+    GetCmdTail preserva /DIR, /TASKS, /VERYSILENT... — sem isso a instancia
+    elevada reinstalava no diretorio padrao (e o teste em pasta temporaria
+    acabava sobrescrevendo a instalacao real). }
   if not IsAdmin then
   begin
-    ShellExec('runas', ExpandConstant('{srcexe}'), '', '',
+    ShellExec('runas', ExpandConstant('{srcexe}'), GetCmdTail, '',
               SW_SHOWNORMAL, ewNoWait, Erro);
     Result := False;
     exit;

@@ -166,6 +166,9 @@ class App(tk.Tk):
                     self._oferece_update(msg)
                 elif tipo == "update_fim":
                     self._update_checando = False
+                    # sem isto o "verificando…" do check manual ficava para
+                    # sempre na tela (quando nao havia atualizacao ou dava erro)
+                    self._limpa_verificando()
                 elif tipo == "update_progress":
                     self.lbl_update.configure(text=msg)
                 elif tipo == "update_ready":
@@ -176,6 +179,8 @@ class App(tk.Tk):
                     self.lbl_update.configure(text="")
                     messagebox.showerror("Atualização", msg)
                 elif tipo == "aviso":
+                    # a resposta chegou: tira o "verificando…" ANTES da caixa
+                    self._limpa_verificando()
                     messagebox.showinfo("Atualizações", msg)
                 else:
                     self._log(msg)
@@ -218,6 +223,12 @@ class App(tk.Tk):
                 self.fila.put(("aviso", "Não foi possível verificar: %s" % ex))
         finally:
             self.fila.put(("update_fim", None))
+
+    def _limpa_verificando(self):
+        """Zera o rótulo do check quando ele ainda está no "verificando…"."""
+        texto = str(self.lbl_update.cget("text"))
+        if texto.startswith("verificando"):
+            self.lbl_update.configure(text="")
 
     def _oferece_update(self, estado):
         self._update_estado = estado

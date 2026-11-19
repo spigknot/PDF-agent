@@ -1279,3 +1279,22 @@ passei a caçar bug no lugar errado. Escrever o arquivo direto (`write_file`).
 
 **Lição de produto**: app `--windowed` não tem onde imprimir. Ou seja: todo
 feedback precisa ser **janela** — e uma só, com progresso, tempo e resultado.
+
+## Rodada 23 — "verificando…" eterno (1.3.4)
+
+**Sintoma**: clicar em "Verificar atualizações" deixava `verificando…` na tela
+para sempre (sem atualização disponível ou com erro).
+
+**Causa**: o worker do check sempre enfileirava `("update_fim", None)`, mas o
+tratador só religava `_update_checando`; quem limpava o rótulo era
+`_oferece_update` — que **não roda** quando não há oferta ou quando dá erro.
+
+**Correção**: `_limpa_verificando()` chamado em `update_fim` e **antes** da
+caixa do `aviso` (o texto sai da tela no instante da resposta, não depois do
+modal). Testes: `tests/test_updater_ui.py` cobre os três caminhos (aviso,
+update_fim, oferta preservada).
+
+**Lição de método**: rótulo transitório de UI (`verificando…`, `aplicando…`)
+precisa de um **ponto único de limpeza** chamado em TODOS os caminhos de saída
+(sucesso, "nada a fazer", erro) — inclusive antes de abrir diálogo modal, que
+congela o laço de eventos.
