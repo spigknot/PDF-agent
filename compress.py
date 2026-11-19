@@ -54,7 +54,7 @@ _sem_risco_kernel = False
 _CLIPADOS = set()
 
 # Versao do aplicativo (mostrada por --version e usada no build do .exe)
-VERSAO = "1.3.1"
+VERSAO = "1.3.2"
 
 LEVELS = {
     # Low (0): base = perfil Default (tudo desligado) + overrides abaixo.
@@ -5701,6 +5701,28 @@ def _nome_livre(caminho):
     return "%s_%d%s" % (raiz, n, ext)
 
 
+def _console_oculta():
+    """Aloca UMA console oculta quando o .exe roda sem console pai.
+
+    Sem isso, cada worker de multiprocessing herda "sem console" e o Windows
+    abre uma janela `conhost` POR worker — eram ~22 janelas piscando durante a
+    compressao vinda do menu de contexto. Com a console oculta, os filhos a
+    herdam e nao aparece nada.
+    """
+    if os.name != "nt" or not getattr(sys, "frozen", False):
+        return
+    try:
+        import ctypes
+
+        k32 = ctypes.windll.kernel32
+        if k32.GetConsoleWindow():
+            return
+        if k32.AllocConsole():
+            ctypes.windll.user32.ShowWindow(k32.GetConsoleWindow(), 0)  # SW_HIDE
+    except Exception:
+        pass
+
+
 def _aviso(titulo, msg, erro=False):
     """Caixa de dialogo — o .exe e --windowed, entao print nao aparece."""
     try:
@@ -5717,8 +5739,12 @@ def _aviso(titulo, msg, erro=False):
             pass
 
 
-def _in_place(entradas, args):
-    """Comprime no lugar: original vira <nome>_old.pdf, saida assume o nome."""
+def _in_place(entradas, args, log=None):
+    """Comprime no lugar: original vira <nome>_old.pdf, saida assume o nome.
+
+    Devolve (ok, mensagem). `log` alimenta a janela de progresso do --avisar.
+    """
+    log = log or (lambda m: None)
     linhas = []
     falhas = 0
     for entrada in entradas:
@@ -5726,7 +5752,7 @@ def _in_place(entradas, args):
         base = os.path.splitext(arquivo)[0]
         tmp = os.path.join(pasta, ".pdfagent_%s.tmp.pdf" % base)
         try:
-            r = comprimir(entrada, tmp, args.nivel)
+            r = comprimir(entrada, tmp, args.nivel, log=log)
             if r["depois"] >= r["antes"]:
                 raise RuntimeError("nao ficou menor (%d -> %d bytes)"
                                    % (r["antes"], r["depois"]))
@@ -5744,14 +5770,7 @@ def _in_place(entradas, args):
             except Exception:
                 pass
             linhas.append("%s: FALHOU (%s)" % (arquivo, ex))
-    msg = "\n".join(linhas)
-    if args.avisar:
-        _aviso("PDFagent", msg, erro=bool(falhas))
-    else:
-        for linha in linhas:
-            print(linha)
-    if falhas:
-        sys.exit(1)
+    return (falhas == 0, "\n".join(linhas))
 
 
 def main(argv=None):
@@ -5791,7 +5810,25 @@ def main(argv=None):
     if not entradas:
         sys.exit("nenhum PDF encontrado")
     if args.in_place:
-        return _in_place(entradas, args)
+        if args.avisar:
+            import progresso
+
+            if len(entradas) == 1:
+                try:
+                    tamanho = os.path.getsize(entradas[0]) / 1048576.0
+                    sub = "%s  ·  %.1f MB" % (os.path.basename(entradas[0]), tamanho)
+                except OSError:
+                    sub = os.path.basename(entradas[0])
+            else:
+                sub = "%d arquivo(s)" % len(entradas)
+            return progresso.executar(
+                lambda log: _in_place(entradas, args, log), subtitulo=sub)
+        ok, msg = _in_place(entradas, args)
+        for linha in msg.splitlines():
+            print(linha)
+        if not ok:
+            sys.exit(1)
+        return 0
     falhas = 0
     for entrada in entradas:
         if args.saida and len(entradas) == 1:

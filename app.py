@@ -289,6 +289,33 @@ class App(tk.Tk):
             os._exit(0)
 
 
+def _erro_fatal(tipo, valor, tb):
+    """`.exe --windowed`: exceção não tratada não aparece em lugar nenhum.
+
+    Grava o traceback em %TEMP%\\pdfagent_erro.log (com o argv) e mostra um
+    diálogo — sem isso um erro no menu de contexto é um "não aconteceu nada".
+    """
+    import datetime
+    import tempfile
+    import traceback
+
+    caminho = os.path.join(tempfile.gettempdir(), "pdfagent_erro.log")
+    try:
+        with open(caminho, "a", encoding="utf-8") as fh:
+            fh.write("\n=== %s ===\n" % datetime.datetime.now().isoformat(timespec="seconds"))
+            fh.write("argv: %r\n" % (sys.argv,))
+            traceback.print_exception(tipo, valor, tb, file=fh)
+    except Exception:
+        caminho = "(não foi possível gravar)"
+    try:
+        import compress
+        compress._aviso("PDFagent — erro",
+                        "%s: %s\n\nlog: %s" % (tipo.__name__, valor, caminho),
+                        erro=True)
+    except Exception:
+        pass
+
+
 def _anexa_console():
     """No .exe --windowed o stdout/stderr vem nulos: sem isso o modo linha de
     comando (PDFagent.exe entrada.pdf -n low) nao imprime nada. Anexa ao
@@ -318,6 +345,10 @@ if __name__ == "__main__":
     # a tarefa do pool e sai. Fora do .exe e' no-op.
     import multiprocessing
     multiprocessing.freeze_support()
+    # uma console oculta: os workers de multiprocessing a herdam e nao abrem
+    # uma janelinha conhost cada um quando o app vem do Explorer/menu
+    compress._console_oculta()
+    sys.excepthook = _erro_fatal
     argv = sys.argv[1:]
     if argv:
         _anexa_console()

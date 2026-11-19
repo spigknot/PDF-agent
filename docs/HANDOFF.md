@@ -1,7 +1,7 @@
 # HANDOFF — CompressPDF × iLovePDF
 
 > Prompt de continuidade. Cole num agente novo para retomar sem perder contexto.
-> Estado em: 20 rodadas de investigação concluídas.
+> Estado em: 22 rodadas de investigação concluídas.
 
 ---
 
@@ -22,6 +22,15 @@ Branch `paridade/rodada-5`, árvore limpa. **Releases publicadas:** `v1.1.0`
 com 4 assets cada. A 1.2.0 trouxe o **updater por diff**: manifest assinado no
 R2 (bucket `pdf-agent`, público em `pub-61758a75c3ad4f2286db8345ca22115a.r2.dev`),
 `PDFagentUpdater.exe` transacional com rollback, checagem no boot + botão verde.
+
+**Interface no menu de contexto (1.3.2):** fim das janelinhas de `conhost`
+(cada worker abria a sua quando o app vinha do Explorer — 22 medidas, agora 0:
+`compress._console_oculta()` aloca uma console escondida e os filhos a herdam).
+O `--avisar` virou **uma** janela (`progresso.py`) com fase, barra e cronômetro
+congelado no fim, em comprimir **e** dividir. O dividir abre perguntando: limite
+em MB (1 casa, **1,7** já preenchido, piso 1,0) e caixa **Comprimir desmarcada**
+— marcada, aparecem low/recommended/extreme. O app não comprime mais sozinho.
+Erros no `.exe --windowed` vão para `%TEMP%\pdfagent_erro.log` + diálogo.
 
 **Updater tem GUI própria (1.3.0):** `updater/apply.py` traz o
 `StandaloneUpdaterUI` portado do SIG — pasta do app, versão instalada (de

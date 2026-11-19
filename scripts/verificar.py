@@ -146,6 +146,14 @@ def teste_executavel():
                 "" if ok else saida.strip().splitlines()[-1][:120])
 
 
+def teste_progresso():
+    """Janela única do --avisar (fase, barra, cronômetro) e console oculta."""
+    rc, saida = roda([PY, os.path.join(RAIZ, "tests", "test_progresso.py")])
+    ok = rc == 0 and "TUDO OK" in saida
+    return item("progresso (janela única / console oculta)", ok,
+                "" if ok else saida.strip().splitlines()[-1][:120])
+
+
 def teste_paridade_lab():
     """Tamanho + texto + render no documento de estresse (lab/processo.pdf)."""
     rc, saida = roda([PY, os.path.join(RAIZ, "tests", "test_paridade_lab.py")],
@@ -170,7 +178,8 @@ def main():
     print("== verificacao do compressor ==  (%s)" % RAIZ)
     resultados = [teste_niveis(), teste_exit_code(), teste_cli(), teste_launcher(),
                   teste_consolidacao(), teste_coleta_fontes(), teste_dpi_pacotes(),
-                  teste_executavel(), teste_paridade_lab()]
+                  teste_executavel(), teste_progresso(),
+                  teste_paridade_lab()]
     par_ok, _n_difs = teste_paridade(args.lab, args.max_difs)
     resultados.append(par_ok)
 

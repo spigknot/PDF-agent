@@ -18,11 +18,24 @@ import compress  # noqa: E402
 
 LAB = r"C:\Users\Gustavo\Desktop\lab"
 ORIG = os.path.join(LAB, "processo.pdf")
-REFS = {
-    "recommended": os.path.join(LAB, "processo-compressed.pdf"),
-    "extreme": os.path.join(LAB, "processo-compressed-extreme.pdf"),
-    "low": os.path.join(LAB, "processo-compressed-low.pdf"),
+# nomes aceitos para o baseline do motor (o lab ja foi reorganizado algumas
+# vezes): usa o primeiro que existir
+_CANDIDATOS = {
+    "recommended": ("processo-compressed.pdf", "processo-recommended.pdf"),
+    "extreme": ("processo-compressed-extreme.pdf", "processo-extreme.pdf"),
+    "low": ("processo-compressed-low.pdf", "processo-low.pdf"),
 }
+
+
+def _ref(nivel):
+    for nome in _CANDIDATOS[nivel]:
+        caminho = os.path.join(LAB, nome)
+        if os.path.exists(caminho):
+            return caminho
+    return os.path.join(LAB, _CANDIDATOS[nivel][0])
+
+
+REFS = {nivel: _ref(nivel) for nivel in _CANDIDATOS}
 # teto de tamanho relativo a referencia. Apertado em 14/11 com o ganho medido
 # (0,990 / 1,004 / 0,950): qualquer regressao acima disso reprova.
 LIMITE = {"recommended": 1.000, "extreme": 1.015, "low": 0.990}

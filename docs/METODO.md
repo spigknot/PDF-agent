@@ -1249,5 +1249,33 @@ Gate dos 3 níveis: recommended **93,77%** da referência, extreme **93,27%**, l
 operandos**, não contagem de operadores. Um `cm` idêntico em número pode custar
 20 bytes a mais e responder por 100+ KB de diferença.
 
+## Rodada 22 — uma janela só (1.3.2)
 
+**Sintoma**: ao comprimir/dividir pelo menu de contexto apareciam **várias
+janelinhas de prompt** abrindo e fechando.
 
+**Causa**: o `.exe` é `--windowed`; vindo do Explorer não há console pai, e cada
+worker de `multiprocessing` fazia o Windows criar um `conhost` próprio —
+**22 janelas** medidas no mesmo arquivo. O `--avisar` também só mostrava um
+MessageBox no fim, sem progresso nenhum.
+
+**Correção**:
+- `compress._console_oculta()` (chamada no entrypoint, antes de qualquer pool):
+  `AllocConsole()` + `ShowWindow(SW_HIDE)`; os filhos herdam a console oculta.
+  Medido: **22 → 0** janelas de console visíveis.
+- `progresso.py`: **uma** janela para o `--avisar`, com barra que avança pelas
+  fases `[1]`…`[6]`, cronômetro `m:ss,d` congelado no fim e resultado no mesmo
+  diálogo (bytes, %, tempo). Vale para comprimir e dividir.
+- dividir pergunta antes: limite em MB (1 casa, 1,7 já preenchido, piso **1,0**)
+  e caixa **Comprimir desmarcada**; marcada, aparecem low/recommended/extreme.
+  O app não comprime mais sozinho.
+- `app.py`: `sys.excepthook` grava `%TEMP%\pdfagent_erro.log` e mostra diálogo —
+  no `.exe --windowed` um erro morria em silêncio.
+
+**Lição de método**: não montar script de teste com `printf`/heredoc de shell
+quando o conteúdo tem caminho Windows. `printf '...\flash.pdf'` virou
+`\x0c` + `lash.pdf`; o app recebia um arquivo inexistente, devolvia 1 e eu
+passei a caçar bug no lugar errado. Escrever o arquivo direto (`write_file`).
+
+**Lição de produto**: app `--windowed` não tem onde imprimir. Ou seja: todo
+feedback precisa ser **janela** — e uma só, com progresso, tempo e resultado.

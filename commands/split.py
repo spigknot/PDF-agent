@@ -17,6 +17,12 @@ import io
 import os
 import sys
 
+# rodar `python commands/split.py` direto poe commands/ no sys.path; a raiz
+# do repo (onde vivem compress.py e progresso.py) precisa estar lá também
+_RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _RAIZ not in sys.path:
+    sys.path.insert(0, _RAIZ)
+
 #: limite usado pelo menu de contexto (pode ser trocado por PDFAGENT_LIMITE)
 LIMITE_PADRAO_MB = 10.0
 
@@ -156,7 +162,7 @@ def dividir(entrada, limite, comprimir=True, nivel="recommended",
                            ".pdfagent_split_%s.pdf" % os.path.splitext(
                                os.path.basename(entrada))[0])
         try:
-            r = compress.comprimir(entrada, tmp, nivel, log=lambda m: None)
+            r = compress.comprimir(entrada, tmp, nivel, log=log)
             if r["depois"] < r["antes"]:
                 origem, comprimido = tmp, tmp
                 log("  comprimido: %d -> %d bytes (-%.1f%%)"
@@ -241,34 +247,54 @@ def main(argv=None):
     if not os.path.exists(args.entrada):
         print("arquivo não encontrado: %s" % args.entrada, file=sys.stderr)
         return 1
-    print("dividindo %s (limite %.2f MB, compressão %s)"
-          % (os.path.basename(args.entrada), limite / 1048576,
-             "off" if args.sem_comprimir else args.nivel))
-    try:
-        r = dividir(args.entrada, limite,
-                    comprimir=not args.sem_comprimir, nivel=args.nivel,
-                    destino=args.saida_dir)
-    except Exception as ex:
-        msg = "falha ao dividir: %s" % ex
-        print(msg, file=sys.stderr)
-        if args.avisar:
-            import compress
-            compress._aviso("PDFagent", msg, erro=True)
-        return 1
 
-    if r["precisa_dividir"]:
-        msg = "%d arquivo(s) gerado(s) com limite de %.2f MB" % (
-            len(r["partes"]), limite / 1048576)
-    elif r["partes"]:
-        msg = "não precisou dividir; comprimido salvo em %s" % os.path.basename(r["partes"][0])
-    else:
-        msg = "não precisou dividir (já cabe em %.2f MB)" % (limite / 1048576)
-    print(msg)
+    def trabalho(log, escolha):
+        """`escolha` = {"limite_mb", "comprimir", "nivel"} (vem da janela)."""
+        limite = int(round(escolha["limite_mb"] * 1048576))
+        comprimir = bool(escolha["comprimir"])
+        nivel = escolha["nivel"]
+        log("dividindo %s (limite %.1f MB, compressão %s)"
+            % (os.path.basename(args.entrada), escolha["limite_mb"],
+               nivel if comprimir else "desligada"))
+        try:
+            r = dividir(args.entrada, limite,
+                        comprimir=comprimir, nivel=nivel,
+                        destino=args.saida_dir, log=log)
+        except Exception as ex:
+            return False, "falha ao dividir: %s" % ex
+        if r["precisa_dividir"]:
+            msg = "%d arquivo(s) gerado(s) com limite de %.1f MB" % (
+                len(r["partes"]), escolha["limite_mb"])
+        elif r["partes"]:
+            msg = ("não precisou dividir; comprimido salvo em %s"
+                   % os.path.basename(r["partes"][0]))
+        else:
+            msg = "não precisou dividir (já cabe em %.1f MB)" % escolha["limite_mb"]
+        partes = "\n".join("• " + os.path.basename(c) for c in r["partes"])
+        return True, msg + ("\n\n" + partes if partes else "")
+
     if args.avisar:
-        import compress
-        compress._aviso("PDFagent", msg + "\n\n" + "\n".join(
-            "• " + os.path.basename(c) for c in r["partes"]))
-    return 0
+        import progresso
+
+        try:
+            sub = "%s  ·  %.1f MB" % (os.path.basename(args.entrada),
+                                      os.path.getsize(args.entrada) / 1048576.0)
+        except OSError:
+            sub = os.path.basename(args.entrada)
+        # a janela PERGUNTA: limite (1 casa, ja em 1,7 MB) + caixa "Comprimir"
+        # DESMARCADA; o mesmo dialogo vira a tela de progresso no Dividir
+        return progresso.executar(
+            trabalho, subtitulo=sub,
+            pedir_limite=(args.limite / 1048576.0 if args.limite
+                          else progresso.LIMITE_PADRAO_MB),
+            comprimir_inicial=False,
+            nivel_inicial=args.nivel)
+    ok, msg = trabalho(lambda m: None,
+                       {"limite_mb": limite / 1048576.0,
+                        "comprimir": not args.sem_comprimir,
+                        "nivel": args.nivel})
+    (print if ok else lambda m: print(m, file=sys.stderr))(msg)
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

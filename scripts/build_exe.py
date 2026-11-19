@@ -53,6 +53,7 @@ def _build(onedir=False, debug=False):
         # entrypoint do PyInstaller vira __main__, sem isto o .exe instalado
         # responde "comando 'gui' indisponivel: No module named 'app'".
         "--hidden-import", "app",
+        "--hidden-import", "progresso",
         "--collect-submodules", "fontTools",
         # comandos sao carregados dinamicamente pelo cli.py (__import__)
         "--collect-submodules", "commands",
