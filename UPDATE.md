@@ -245,6 +245,12 @@ rodada.
 | release com asset faltando | upload interrompido | `gh release upload` do asset faltante; nunca recriar a release |
 | `PDFagent.exe --version` não imprime nada | exe `--windowed` sem console | o app anexa o console do pai (`AttachConsole`); se falhar, rode a partir de um terminal real, não de um launcher que descarta stdio |
 | arquivo comprimido maior que o original | garantia "nunca maior" copia o original | não é bug; o app reporta 0% e mantém os bytes |
+| `gh release create` roda e o terminal "morre" no meio | upload de 180 MB passa do timeout do terminal | rode release/upload em background com `notify_on_complete` e confira com `gh release view` |
+| asset publicado com bytes antigos | `gh release upload` sem `--clobber` mantém o arquivo anterior | reenvie com `--clobber` e confira o `size` no `gh release view` |
+| tag da release não bate com os binários | o fix entrou depois de criar a release | `git tag -f v<versao> <sha> && git push --force origin refs/tags/v<versao>` (tag não é protegida; `main` é) |
+| notas da release desatualizadas | hash/tamanho mudou depois do `release create` | `gh release edit v<versao> --notes-file docs/RELEASE-<versao>.md` |
+| cliente não consegue verificar atualização | manifesto publicado sem `build-info.json`/`PDFagentUpdater.exe` | a versão publicada no R2 PRECISA conter os dois; `sync_r2.py --dry-run` antes |
+| `sync_r2.py` diz `orfaos no bucket: N` | arquivos de builds antigos ficaram no bucket | rode com `--prune` depois de conferir a lista |
 | `dist/` aparece no `git status` | `.gitignore` alterado | restaurar as entradas `dist/`, `build/`, `*.spec` |
 
 ## Checklist rápido (copiar no topo do PR/release)
@@ -252,6 +258,9 @@ rodada.
 - [ ] `VERSAO` == `#define Versao`
 - [ ] `scripts/verificar.py` → PASS, `0/21`
 - [ ] `dist/PDFagent.exe` gerado e `--version` correto
+- [ ] `dist/PDFagent/PDFagent.exe` **sem argumentos** abre a GUI (entrypoint `__main__`)
+- [ ] `dist/PDFagentUpdater.exe` sem argumentos abre a **GUI do atualizador**
+- [ ] `dist/PDFagent/build-info.json` com a versão do release
 - [ ] `dist/PDFagentUpdater.exe` no pacote e `sync_r2.py` publicado (manifesto assinado)
 - [ ] `dist/PDFagent-Setup-<v>.exe` gerado, instala e cria PATH + menu
 - [ ] `dist/PDFagent-onedir-<v>.zip` gerado
