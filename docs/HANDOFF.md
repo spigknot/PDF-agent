@@ -23,7 +23,13 @@ com 4 assets cada. A 1.2.0 trouxe o **updater por diff**: manifest assinado no
 R2 (bucket `pdf-agent`, público em `pub-61758a75c3ad4f2286db8345ca22115a.r2.dev`),
 `PDFagentUpdater.exe` transacional com rollback, checagem no boot + botão verde.
 
-**ID do update:** `updater/protocol.py` (manifesto), `updater/apply.py` (motor),
+**Updater tem GUI própria (1.3.0):** `updater/apply.py` traz o
+`StandaloneUpdaterUI` portado do SIG — pasta do app, versão instalada (de
+`build-info.json`, escrito pelo `build_exe.py`), pacotes completos do GitHub com
+tamanho, botões Verificar / Atualizar (diff) / Instalar-reparar / Escolher ZIP,
+barra de progresso e log com timestamp. Sem argumentos o exe abre a GUI.
+
+**ID do update:** `updater/protocol.py` (manifesto), `updater/apply.py` (motor + GUI),
 `scripts/sync_r2.py` (publicador), `scripts/build_updater.py`,
 `scripts/empacota_full.py`, `app.py` (UI) e `tools/bancada_update.py`
 (teste real: manifest → diff → updater). Credenciais em `release/`
