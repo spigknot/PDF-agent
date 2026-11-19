@@ -244,6 +244,7 @@ rodada.
 | `gh release create` com tag no commit errado | release criada antes do push | sempre seção 6 antes da 7; se preciso: `git push origin +<SHA>:refs/tags/v<versao>` |
 | release com asset faltando | upload interrompido | `gh release upload` do asset faltante; nunca recriar a release |
 | `PDFagent.exe --version` não imprime nada | exe `--windowed` sem console | o app anexa o console do pai (`AttachConsole`); se falhar, rode a partir de um terminal real, não de um launcher que descarta stdio |
+| `dist/PDFagentUpdater.exe` sem argumentos "sai com 0" e não mostra janela | o exe congelado se **realoca** para `%LOCALAPPDATA%\...\updater\helpers\<uuid>` e o **worker** é quem abre a GUI | confira a janela `Atualizador do PDFagent` nos processos `PDFagentUpdater`, não o exit code do lançador |
 | arquivo comprimido maior que o original | garantia "nunca maior" copia o original | não é bug; o app reporta 0% e mantém os bytes |
 | `gh release create` roda e o terminal "morre" no meio | upload de 180 MB passa do timeout do terminal | rode release/upload em background com `notify_on_complete` e confira com `gh release view` |
 | asset publicado com bytes antigos | `gh release upload` sem `--clobber` mantém o arquivo anterior | reenvie com `--clobber` e confira o `size` no `gh release view` |
