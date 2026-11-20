@@ -20,6 +20,11 @@ COMMANDS = {
         "alvo": ("commands.split", "main"),
         "shim": "pdfsplit",
     },
+    "menu": {
+        "help": "tela única do botão direito: escolher comprimir ou dividir",
+        "alvo": ("commands.menu", "main"),
+        "shim": None,
+    },
     "gui": {
         "help": "abre a interface gráfica (padrão quando não há argumentos)",
         "alvo": ("app", "run_gui"),

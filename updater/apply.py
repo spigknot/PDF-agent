@@ -1280,6 +1280,24 @@ def installed_version(target: Path) -> str | None:
     return version if VERSION_RE.fullmatch(version) else None
 
 
+def _icone_updater():
+    """Ícone da janela do updater (mesmo do PDFagentUpdater.exe)."""
+    import sys
+
+    nomes = []
+    if getattr(sys, "frozen", False):
+        nomes.append(os.path.join(getattr(sys, "_MEIPASS", ""),
+                                  "pdfagent-updater.ico"))
+        nomes.append(os.path.join(os.path.dirname(sys.executable),
+                                  "pdfagent-updater.ico"))
+    nomes.append(os.path.join(os.path.dirname(__file__), "..", "assets",
+                              "pdfagent-updater.ico"))
+    for nome in nomes:
+        if nome and os.path.exists(nome):
+            return nome
+    return None
+
+
 class StandaloneUpdaterUI:
     def __init__(self, target: Path):
         import tkinter as tk
@@ -1298,6 +1316,12 @@ class StandaloneUpdaterUI:
         self.busy = False
 
         self.root = tk.Tk()
+        icone = _icone_updater()
+        if icone:
+            try:
+                self.root.iconbitmap(icone)
+            except Exception:
+                pass
         self.root.title("Atualizador do PDFagent")
         self.root.geometry("620x430")
         self.root.minsize(580, 410)
