@@ -26,9 +26,6 @@ if _RAIZ not in sys.path:
 #: limite usado pelo menu de contexto (pode ser trocado por PDFAGENT_LIMITE)
 LIMITE_PADRAO_MB = 10.0
 
-#: chaves que levariam a outras páginas / ao topo da árvore
-_PULAR = {"/Parent", "/P", "/Prev", "/Next", "/First", "/Last"}
-
 
 def _como_bytes(texto):
     """'10M' | '1.5 mb' | '500k' | '1048576' -> bytes."""
@@ -53,95 +50,73 @@ def _limite_padrao():
     return int(LIMITE_PADRAO_MB * 1024 * 1024)
 
 
-def _pesos_por_pagina(pdf):
-    """Bytes (streams crus + dicts) que cada página traz de novo."""
+def _monta_parte(pdf, ini, fim):
+    """Serializa as páginas [ini, fim) em RAM (lossless) e devolve os bytes."""
     import pikepdf
 
-    vistos = set()
-    pesos = []
-    for pagina in pdf.pages:
-        total = 0
-        pilha = [pagina.obj]
-        while pilha:
-            obj = pilha.pop()
-            try:
-                og = obj.objgen
-            except Exception:
-                og = None
-            if og:
-                if og in vistos:
-                    continue
-                vistos.add(og)
-            if isinstance(obj, pikepdf.Stream):
-                try:
-                    total += len(obj.read_raw_bytes())
-                except Exception:
-                    pass
-            if isinstance(obj, pikepdf.Dictionary):
-                try:
-                    total += len(str(obj)) // 2
-                except Exception:
-                    pass
-                for chave in obj.keys():
-                    if str(chave) in _PULAR:
-                        continue
+    buf = io.BytesIO()
+    with pikepdf.Pdf.new() as destino:
+        try:
+            info = pdf.docinfo
+            if info is not None:
+                for k, v in info.items():
                     try:
-                        pilha.append(obj[chave])
+                        destino.docinfo[k] = v
                     except Exception:
                         pass
-            elif isinstance(obj, pikepdf.Array):
-                for item in obj:
-                    pilha.append(item)
-        pesos.append(total)
-    return pesos
-
-
-def _monta_parte(pdf, ini, fim):
-    """Serializa as páginas [ini, fim) num PDF novo e devolve os bytes."""
-    import pikepdf
-
-    destino = pikepdf.Pdf.new()
-    try:
-        info = pdf.docinfo
-        if info is not None:
-            for k, v in info.items():
-                try:
-                    destino.docinfo[k] = v
-                except Exception:
-                    pass
-    except Exception:
-        pass
-    for pagina in pdf.pages[ini:fim]:
-        copiada = destino.copy_foreign(pagina.obj)
-        destino.pages.append(pikepdf.Page(copiada))
-    buf = io.BytesIO()
-    destino.save(buf)
-    destino.close()
+        except Exception:
+            pass
+        destino.pages.extend(pdf.pages[ini:fim])
+        destino.save(
+            buf,
+            compress_streams=False,
+            recompress_flate=False,
+            object_stream_mode=pikepdf.ObjectStreamMode.preserve,
+        )
     return buf.getvalue()
 
 
-def _partes(pdf, limite):
-    """Lista de (ini, fim, bytes) respeitando o limite. Serializa uma vez por parte."""
-    pesos = _pesos_por_pagina(pdf)
-    n = len(pesos)
+def _partes(pdf, limite, log=None):
+    """Lista de (ini, fim, bytes) via Busca Exponencial + Busca Binária em RAM."""
+    n = len(pdf.pages)
     partes = []
     ini = 0
     while ini < n:
-        estimado = 0
-        fim = ini
-        while fim < n:
-            if fim > ini and estimado + pesos[fim] > limite:
+        # 1. Busca Exponencial (1, 2, 4, 8...) para delimitar a janela
+        salto = 1
+        melhor_fim = ini + 1
+        melhor_dados = None
+        while (ini + salto) <= n:
+            dados = _monta_parte(pdf, ini, ini + salto)
+            if len(dados) <= limite:
+                melhor_fim = ini + salto
+                melhor_dados = dados
+                salto *= 2
+            else:
+                if salto == 1:
+                    melhor_dados = dados
                 break
-            estimado += pesos[fim]
-            fim += 1
-        fim = max(fim, ini + 1)          # sempre pelo menos 1 página
-        dados = _monta_parte(pdf, ini, fim)
-        # ajuste fino: só quando a estimativa errou para cima
-        while fim - ini > 1 and len(dados) > limite:
-            fim -= 1
-            dados = _monta_parte(pdf, ini, fim)
-        partes.append((ini, fim, dados))
-        ini = fim
+
+        # 2. Busca Binária na janela [melhor_fim + 1, min(n, ini + salto - 1)]
+        baixo = melhor_fim + 1
+        alto = min(n, ini + salto - 1)
+        while baixo <= alto:
+            meio = (baixo + alto) // 2
+            dados = _monta_parte(pdf, ini, meio)
+            if len(dados) <= limite:
+                melhor_fim = meio
+                melhor_dados = dados
+                baixo = meio + 1
+            else:
+                alto = meio - 1
+
+        if melhor_dados is None:
+            melhor_dados = _monta_parte(pdf, ini, melhor_fim)
+
+        partes.append((ini, melhor_fim, melhor_dados))
+        ini = melhor_fim
+        if log is not None:
+            log("dividindo: %d/%d páginas…" % (ini, n))
     return partes
 
 
@@ -194,12 +169,9 @@ def dividir(entrada, limite, comprimir=True, nivel="recommended",
                 "total_antes": os.path.getsize(entrada),
                 "total_depois": os.path.getsize(caminho) if caminho else total_origem}
 
-    pdf = pikepdf.open(origem)
-    try:
+    with pikepdf.open(origem) as pdf:
         total = len(pdf.pages)
-        partes = _partes(pdf, limite)
-    finally:
-        pdf.close()
+        partes = _partes(pdf, limite, log=log)
 
     caminhos = []
     for i, (ini, fim, dados) in enumerate(partes, 1):
