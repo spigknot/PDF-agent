@@ -21,6 +21,7 @@ DisableProgramGroupPage=yes
 PrivilegesRequired=admin
 OutputDir=..\dist
 OutputBaseFilename=PDFagent-Setup-{#Versao}
+SetupIconFile=..\assets\pdfagent.ico
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern

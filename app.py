@@ -32,6 +32,12 @@ def _precisa_atualizar(versao_remota, versao_local=None):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
+        icone = _icone()
+        if icone:
+            try:
+                self.iconbitmap(icone)
+            except Exception:
+                pass
         self.title("PDFagent")
         self.geometry("640x560")
         self.arquivos = []
@@ -300,6 +306,20 @@ class App(tk.Tk):
             os._exit(0)
 
 
+def _icone():
+    """Caminho do .ico: no fonte fica em assets/; no congelado, ao lado do exe."""
+    candidatos = []
+    if getattr(sys, "frozen", False):
+        candidatos.append(os.path.join(getattr(sys, "_MEIPASS", ""), "pdfagent.ico"))
+        candidatos.append(os.path.join(os.path.dirname(sys.executable), "pdfagent.ico"))
+    candidatos.append(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   "assets", "pdfagent.ico"))
+    for caminho in candidatos:
+        if caminho and os.path.exists(caminho):
+            return caminho
+    return None
+
+
 def _erro_fatal(tipo, valor, tb):
     """`.exe --windowed`: exceção não tratada não aparece em lugar nenhum.
 
@@ -340,6 +360,25 @@ def _anexa_console():
                               encoding="utf-8", errors="replace")
             sys.stderr = open("CONOUT$", "w", buffering=1,
                               encoding="utf-8", errors="replace")
+            return
+    except Exception:
+        pass
+    _stdio_fallback()
+
+
+def _stdio_fallback():
+    """Sem console pai (menu de contexto), argparse ainda precisa de um fluxo.
+
+    `argparse.error()` chama `print_usage(sys.stderr)`; com `sys.stderr is None`
+    o .exe --windowed estourava `AttributeError: 'NoneType' object has no
+    attribute 'write'` em vez de apenas reportar o argumento inválido.
+    """
+    try:
+        caminho = os.path.join(tempfile.gettempdir(), "pdfagent_saida.log")
+        fluxo = open(caminho, "a", buffering=1,
+                     encoding="utf-8", errors="replace")
+        sys.stdout = fluxo
+        sys.stderr = fluxo
     except Exception:
         pass
 

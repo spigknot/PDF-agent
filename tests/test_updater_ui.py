@@ -62,6 +62,22 @@ def test_update_fim_nao_apaga_a_oferta():
         ui.destroy()
 
 
+def test_stdio_fallback_sem_console():
+    """.exe --windowed sem console: argparse nao pode ver stderr=None."""
+    import sys
+
+    import app as appmod
+
+    salva = (sys.stdout, sys.stderr)
+    try:
+        sys.stdout = sys.stderr = None
+        appmod._stdio_fallback()
+        assert sys.stdout is not None and hasattr(sys.stdout, "write")
+        assert sys.stderr is not None and hasattr(sys.stderr, "write")
+    finally:
+        sys.stdout, sys.stderr = salva
+
+
 def main():
     falhas = 0
     for nome, funcao in sorted(globals().items()):

@@ -25,6 +25,8 @@ def _build(onedir=False, debug=False):
         sys.executable, "-m", "PyInstaller",
         "--noconfirm", "--clean", "--onedir" if onedir else "--onefile",
         "--name", NOME,
+        "--icon", os.path.join(RAIZ, "assets", "pdfagent.ico"),
+        "--add-data", os.path.join(RAIZ, "assets", "pdfagent.ico") + os.pathsep + ".",
         "--distpath", os.path.join(RAIZ, "dist"),
         "--workpath", os.path.join(RAIZ, "build"),
         "--specpath", os.path.join(RAIZ, "build"),

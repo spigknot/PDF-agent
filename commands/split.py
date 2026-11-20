@@ -152,9 +152,13 @@ def dividir(entrada, limite, comprimir=True, nivel="recommended",
             except Exception:
                 pass
 
-    pasta = destino or os.path.dirname(origem) or "."
-    os.makedirs(pasta, exist_ok=True)
     base = os.path.splitext(os.path.basename(entrada))[0]
+    # as partes vao SEMPRE para uma subpasta com o nome do arquivo de entrada
+    # (sem extensao), dentro da pasta dele — ou dentro de `destino`, se o
+    # chamador passou um destino explicito
+    raiz = destino or os.path.dirname(origem) or "."
+    pasta = os.path.join(raiz, base)
+    os.makedirs(pasta, exist_ok=True)
 
     total_origem = os.path.getsize(origem)
     if total_origem <= limite:

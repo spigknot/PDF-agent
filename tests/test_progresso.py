@@ -9,7 +9,7 @@ Três defeitos reais que estes testes travam:
 2. o `--avisar` só mostrava um MessageBox no fim; agora é UMA janela com fase,
    barra e cronômetro congelado no fim, em comprimir E dividir.
 3. o dividir comprimia sozinho e não perguntava nada. Agora pergunta o limite
-   (1 casa, 1,7 MB, piso de 1 MB) e a caixa "Comprimir" vem DESMARCADA;
+   (1 casa, 1,6 MB, piso de 1 MB) e a caixa "Comprimir" vem DESMARCADA;
    marcada, aparecem low/recommended/extreme.
 """
 import os
@@ -77,9 +77,9 @@ def test_dividir_pergunta_limite_e_nao_comprime_sozinho():
 
 def test_dialogo_pergunta_com_padroes_certos():
     import progresso
-    janela = progresso.Janela(subtitulo="x.pdf", pedir_limite=1.7)
+    janela = progresso.Janela(subtitulo="x.pdf", pedir_limite=1.6)
     try:
-        assert janela.var_limite.get() == "1.7"
+        assert janela.var_limite.get() == "1.6"
         assert janela.var_comprimir.get() is False
         assert janela.var_nivel.get() == "recommended"
         assert janela.frame_niveis.winfo_manager() == "", \
@@ -87,7 +87,7 @@ def test_dialogo_pergunta_com_padroes_certos():
         janela.chk.invoke()
         assert janela.frame_niveis.winfo_manager() == "pack"
         janela._confirma()
-        assert janela.pedido == {"limite_mb": 1.7, "comprimir": True,
+        assert janela.pedido == {"limite_mb": 1.6, "comprimir": True,
                                  "nivel": "recommended"}
     finally:
         janela.raiz.destroy()
@@ -95,7 +95,7 @@ def test_dialogo_pergunta_com_padroes_certos():
 
 def test_dialogo_recusa_limite_absurdo():
     import progresso
-    janela = progresso.Janela(subtitulo="x.pdf", pedir_limite=1.7)
+    janela = progresso.Janela(subtitulo="x.pdf", pedir_limite=1.6)
     try:
         for valor in ("0.5", "0,2", "abc", "99999"):
             janela.var_limite.set(valor)

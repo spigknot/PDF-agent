@@ -52,6 +52,10 @@ def main():
     r = comando.dividir(origem, LIMITE, comprimir=False, destino=os.path.join(tmp, "a"),
                         log=lambda m: None)
     assert r["precisa_dividir"], "deveria dividir"
+    # subpasta dentro do destino, com o nome do arquivo de entrada sem extensao
+    esperado = os.path.join(tmp, "a", "doc")
+    assert all(os.path.dirname(c) == esperado for c in r["partes"]), \
+        "partes fora da subpasta %s: %s" % (esperado, r["partes"])
     somas = 0
     for caminho in r["partes"]:
         tam = os.path.getsize(caminho)

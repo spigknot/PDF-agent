@@ -1,4 +1,5 @@
 """Empacota o PDFagentUpdater.exe (onefile, sem console) em dist/."""
+import os
 import pathlib
 import subprocess
 import sys
@@ -11,6 +12,8 @@ def main() -> int:
         sys.executable, "-m", "PyInstaller",
         "--noconfirm", "--clean", "--onefile", "--windowed", "--noupx",
         "--name", "PDFagentUpdater",
+        "--icon", str(RAIZ / "assets" / "pdfagent.ico"),
+        "--add-data", str(RAIZ / "assets" / "pdfagent.ico") + os.pathsep + ".",
         "--distpath", str(RAIZ / "dist"),
         "--workpath", str(RAIZ / "build" / "updater"),
         "--specpath", str(RAIZ / "build"),

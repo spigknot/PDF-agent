@@ -5,28 +5,41 @@ Por que existe: o `.exe` é `--windowed`, então (a) sem console os workers de
 via um MessageBox no fim. Aqui há uma janela só, com fase, barra e cronômetro
 (congelado no fim).
 
-No dividir ela abre PERGUNTANDO: limite em MB (1 casa, já em 1,7) e a caixa
+No dividir ela abre PERGUNTANDO: limite em MB (1 casa, já em 1,6) e a caixa
 "Comprimir" — DESMARCADA por padrão; marcada, aparecem low/recommended/
 extreme. O mesmo diálogo vira a tela de progresso depois do clique em Dividir.
 
 Uso:
     codigo = progresso.executar(lambda log: trabalho(log), subtitulo="x.pdf")
     codigo = progresso.executar(lambda log, escolha: trabalho(log, escolha),
-                                subtitulo="x.pdf", pedir_limite=1.7)
-    # escolha = {"limite_mb": 1.7, "comprimir": False, "nivel": "recommended"}
+                                subtitulo="x.pdf", pedir_limite=1.6)
+    # escolha = {"limite_mb": 1.6, "comprimir": False, "nivel": "recommended"}
 """
+import os
 import queue
 import threading
 import time
 
 TITULO = "PDFagent"
 
+def _icone():
+    if getattr(sys, "frozen", False):
+        for c in (os.path.join(getattr(sys, "_MEIPASS", ""), "pdfagent.ico"),
+                  os.path.join(os.path.dirname(sys.executable), "pdfagent.ico")):
+            if c and os.path.exists(c):
+                return c
+    c = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                     "assets", "pdfagent.ico")
+    return c if os.path.exists(c) else None
+
+
+
 # fase do log (as linhas do `comprimir` começam com "[n]") -> fração concluída
 _FASES = ((b"[1]", 0.04), (b"[2]", 0.12), (b"[3]", 0.55),
           (b"[4]", 0.63), (b"[5]", 0.94), (b"[6]", 1.0))
 
 #: limite que a pergunta do dividir já traz preenchido (MB, uma casa decimal)
-LIMITE_PADRAO_MB = 1.7
+LIMITE_PADRAO_MB = 1.6
 
 #: piso aceito: abaixo disso nenhuma parte cabe uma página com imagem
 LIMITE_MINIMO_MB = 1.0
@@ -76,6 +89,12 @@ class Janela:
         self._ttk = ttk
 
         self.raiz = tk.Tk()
+        icone = _icone()
+        if icone:
+            try:
+                self.raiz.iconbitmap(icone)
+            except Exception:
+                pass
         self.raiz.title(titulo)
         self.raiz.geometry("620x330")
         self.raiz.resizable(False, False)

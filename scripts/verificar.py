@@ -154,6 +154,14 @@ def teste_progresso():
                 "" if ok else saida.strip().splitlines()[-1][:120])
 
 
+def teste_menu_contexto():
+    """Atalho do Explorer -> cli -> commands.split -> motor pikepdf novo."""
+    rc, saida = roda([PY, os.path.join(RAIZ, "tests", "test_menu_contexto.py")])
+    ok = rc == 0 and "TUDO OK" in saida
+    return item("menu de contexto (atalho -> motor split)", ok,
+                "" if ok else saida.strip().splitlines()[-1][:120])
+
+
 def teste_updater_ui():
     """Rótulo do check de atualização não pode ficar preso em "verificando…"."""
     rc, saida = roda([PY, os.path.join(RAIZ, "tests", "test_updater_ui.py")])
@@ -186,7 +194,8 @@ def main():
     print("== verificacao do compressor ==  (%s)" % RAIZ)
     resultados = [teste_niveis(), teste_exit_code(), teste_cli(), teste_launcher(),
                   teste_consolidacao(), teste_coleta_fontes(), teste_dpi_pacotes(),
-                  teste_executavel(), teste_progresso(), teste_updater_ui(),
+                  teste_executavel(), teste_progresso(), teste_menu_contexto(),
+                  teste_updater_ui(),
                   teste_paridade_lab()]
     par_ok, _n_difs = teste_paridade(args.lab, args.max_difs)
     resultados.append(par_ok)
