@@ -383,6 +383,99 @@ def _stdio_fallback():
         pass
 
 
+_MENU_CHAVE = r"Software\Classes\SystemFileAssociations\.pdf\shell\PDFagent"
+
+
+def formato_comando_menu(exe):
+    """String do comando do item único — MESMO formato do .iss (`menu "%1"`)."""
+    return '"%s" menu "%%1"' % exe
+
+
+def _apaga_arvore(hkey, caminho):
+    """Remove uma chave do registro com tudo que houver dentro."""
+    import winreg
+
+    try:
+        with winreg.OpenKey(hkey, caminho, 0, winreg.KEY_ALL_ACCESS) as chave:
+            while True:
+                try:
+                    filho = winreg.EnumKey(chave, 0)
+                except OSError:
+                    break
+                _apaga_arvore(hkey, caminho + "\\" + filho)
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
+    try:
+        winreg.DeleteKey(hkey, caminho)
+    except OSError:
+        pass
+
+
+def migra_menu_contexto(chave=_MENU_CHAVE, exe=None):
+    """Leva o menu de contexto de uma instalação antiga ao item único.
+
+    O updater por diff troca só arquivos: o registro (que é do instalador)
+    ficaria para trás e o usuário continuaria com o submenu Comprimir/Dividir.
+    Aqui o próprio app conserta no boot — é HKCU, sem UAC.
+
+    Só age quando encontra o formato ANTIGO conhecido (submenu ou
+    `SubCommands`); se o usuário desmarcou o menu na instalação, não cria nada.
+    Devolve o que fez: "fonte", "sem-windows", "nada-a-fazer", "migrado".
+    """
+    if os.name != "nt":
+        return "sem-windows"
+    import winreg
+
+    hkcu = winreg.HKEY_CURRENT_USER
+    if exe is None:
+        if not getattr(sys, "frozen", False):
+            return "fonte"
+        exe = sys.executable
+
+    def existe(caminho, valor=None):
+        try:
+            with winreg.OpenKey(hkcu, caminho) as k:
+                if valor is not None:
+                    winreg.QueryValueEx(k, valor)
+                return True
+        except OSError:
+            return False
+
+    antigo = (existe(chave + r"\shell\comprimir\command")
+              or existe(chave + r"\shell\dividir\command")
+              or existe(chave, "SubCommands"))
+    if not antigo:
+        return "nada-a-fazer"
+
+    with winreg.CreateKeyEx(hkcu, chave + r"\command", 0,
+                            winreg.KEY_SET_VALUE) as k:
+        winreg.SetValueEx(k, None, 0, winreg.REG_SZ,
+                          formato_comando_menu(exe))
+
+    for sub in (r"\shell\comprimir", r"\shell\dividir"):
+        _apaga_arvore(hkcu, chave + sub)
+    try:
+        with winreg.OpenKey(hkcu, chave, 0, winreg.KEY_SET_VALUE) as k:
+            winreg.DeleteValue(k, "SubCommands")
+    except OSError:
+        pass
+    # se `shell` ficou vazia, some com ela (item único não usa submenu)
+    try:
+        with winreg.OpenKey(hkcu, chave + r"\shell") as k:
+            try:
+                winreg.EnumKey(k, 0)
+                vazia = False
+            except OSError:          # sem subchaves: vazia
+                vazia = True
+    except OSError:
+        vazia = False
+    if vazia:
+        _apaga_arvore(hkcu, chave + r"\shell")
+    return "migrado"
+
+
 def run_gui(argv=None):
     """Abre a interface gráfica (subcomando `gui` do cli.py)."""
     App().mainloop()
@@ -399,6 +492,13 @@ if __name__ == "__main__":
     # uma janelinha conhost cada um quando o app vem do Explorer/menu
     compress._console_oculta()
     sys.excepthook = _erro_fatal
+    # instalação veio por diff? o registro do menu é do instalador — conserta
+    # aqui (HKCU, sem UAC). No portátil onefile não existe instalação: não mexe.
+    if not compress._portatil_onefile():
+        try:
+            migra_menu_contexto()
+        except Exception:
+            pass
     argv = sys.argv[1:]
     if argv:
         _anexa_console()

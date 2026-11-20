@@ -3,7 +3,7 @@
 ; Compilar:  "C:\Users\<user>\AppData\Local\Programs\Inno Setup 6\ISCC.exe" PDFagent.iss
 
 #define Nome "PDFagent"
-#define Versao "1.3.5"
+#define Versao "1.3.6"
 #define Exe "PDFagent.exe"
 
 [Setup]
@@ -37,9 +37,6 @@ UsePreviousAppDir=no
 [Languages]
 Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortuguese.isl"
 
-[Tasks]
-Name: "addpath"; Description: "Adicionar ao PATH do usuário (permite chamar ""PDFagent"" pelo terminal)"
-Name: "contextmenu"; Description: "Adicionar ""PDFagent > Comprimir"" ao menu de contexto de arquivos PDF"
 
 [Dirs]
 ; O app e o updater escrevem na pasta em runtime (staged/updates) SEM admin.
@@ -58,13 +55,13 @@ Name: "{group}\Desinstalar {#Nome}"; Filename: "{uninstallexe}"
 
 [Registry]
 ; --- menu de contexto: UM item "PDFagent" -> tela única (comprimir|dividir) --
-Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.pdf\shell\PDFagent"; ValueType: string; ValueName: "MUIVerb"; ValueData: "{#Nome}"; Flags: uninsdeletekey; Tasks: contextmenu
-Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.pdf\shell\PDFagent"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\pdfagent.ico"; Flags: uninsdeletekey; Tasks: contextmenu
-Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.pdf\shell\PDFagent\command"; ValueType: string; ValueData: """{app}\{#Exe}"" menu ""%1"""; Flags: uninsdeletekey; Tasks: contextmenu
+Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.pdf\shell\PDFagent"; ValueType: string; ValueName: "MUIVerb"; ValueData: "{#Nome}"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.pdf\shell\PDFagent"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\pdfagent.ico"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.pdf\shell\PDFagent\command"; ValueType: string; ValueData: """{app}\{#Exe}"" menu ""%1"""; Flags: uninsdeletekey
 ; --- migração: remove submenu e valores da era com-submenu ------------------
-Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.pdf\shell\PDFagent"; ValueType: string; ValueName: "SubCommands"; Flags: deletevalue uninsdeletekey; Tasks: contextmenu
-Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.pdf\shell\PDFagent\shell\comprimir"; Flags: deletekey uninsdeletekey; Tasks: contextmenu
-Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.pdf\shell\PDFagent\shell\dividir"; Flags: deletekey uninsdeletekey; Tasks: contextmenu
+Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.pdf\shell\PDFagent"; ValueType: string; ValueName: "SubCommands"; Flags: deletevalue uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.pdf\shell\PDFagent\shell\comprimir"; Flags: deletekey uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.pdf\shell\PDFagent\shell\dividir"; Flags: deletekey uninsdeletekey
 
 [Run]
 Filename: "{app}\{#Exe}"; Description: "Abrir o {#Nome} agora"; Flags: nowait postinstall skipifsilent
@@ -177,10 +174,8 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
-  begin
-    if WizardIsTaskSelected('addpath') then
-      AdicionaAoPath();
-  end;
+    { PATH é sempre adicionado: sem pergunta, sem task para o usuário marcar }
+    AdicionaAoPath();
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

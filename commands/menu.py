@@ -462,6 +462,13 @@ def main(argv=None):
     if not os.path.exists(args.entrada):
         print("arquivo não encontrado: %s" % args.entrada, file=sys.stderr)
         return 1
+    # quem chega aqui pelo menu já está no formato novo; a checagem é barata e
+    # conserta instalações em que só o diff do updater rodou
+    try:
+        import app as appmod
+        appmod.migra_menu_contexto()
+    except Exception:
+        pass
     return Janela(args.entrada).executa()
 
 

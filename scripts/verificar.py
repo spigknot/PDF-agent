@@ -162,6 +162,14 @@ def teste_menu_contexto():
                 "" if ok else saida.strip().splitlines()[-1][:120])
 
 
+def teste_menu_migracao():
+    """Menu de contexto: migração do app (diff) e paridade com o instalador."""
+    rc, saida = roda([PY, os.path.join(RAIZ, "tests", "test_menu_migracao.py")])
+    ok = rc == 0 and "TUDO OK" in saida
+    return item("menu (migração x instalador / PATH)", ok,
+                "" if ok else saida.strip().splitlines()[-1][:120])
+
+
 def teste_updater_ui():
     """Rótulo do check de atualização não pode ficar preso em "verificando…"."""
     rc, saida = roda([PY, os.path.join(RAIZ, "tests", "test_updater_ui.py")])
@@ -195,6 +203,7 @@ def main():
     resultados = [teste_niveis(), teste_exit_code(), teste_cli(), teste_launcher(),
                   teste_consolidacao(), teste_coleta_fontes(), teste_dpi_pacotes(),
                   teste_executavel(), teste_progresso(), teste_menu_contexto(),
+                  teste_menu_migracao(),
                   teste_updater_ui(),
                   teste_paridade_lab()]
     par_ok, _n_difs = teste_paridade(args.lab, args.max_difs)
